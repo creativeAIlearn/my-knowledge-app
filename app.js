@@ -15,15 +15,41 @@ const CONFIG = {
   ]
 };
 
+// ===== COOKIE HELPERS =====
+function setCookie(name, value, days) {
+  const d = new Date();
+  d.setTime(d.getTime() + days * 24 * 60 * 60 * 1000);
+  const secure = location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = `${name}=${encodeURIComponent(value)}; expires=${d.toUTCString()}; path=/; SameSite=Lax${secure}`;
+}
+function getCookie(name) {
+  const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+  return match ? decodeURIComponent(match[2]) : '';
+}
+function deleteCookie(name) {
+  const secure = location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; SameSite=Lax${secure}`;
+}
+
 // ===== STATE =====
-let token        = localStorage.getItem('github_token') || '';
+// Read token from cookie first, then fall back to localStorage
+let token = getCookie('github_token');
+if (!token) {
+  try { token = localStorage.getItem('github_token') || ''; } catch { token = ''; }
+}
+// Ensure it is written to both stores so both survive independent cache/data clears
+if (token) {
+  setCookie('github_token', token, 365);
+  try { localStorage.setItem('github_token', token); } catch {}
+}
+
 let allNotes     = [];
 let filteredNotes = [];
 let activeCategory = 'all';
 let activeTag      = '';
 let searchQuery    = '';
 let searchDebounce = null;
-let currentNoteId  = null;   // SHA of the note open in view modal
+let currentNoteId  = null;
 let favourites     = new Set(JSON.parse(localStorage.getItem('vault_favourites') || '[]'));
 
 // ===== INIT =====
@@ -65,7 +91,8 @@ async function connectVault() {
     if (res.status === 404) { showSetupError('Repository not found. Make sure the token has repo access.'); return; }
     if (!res.ok)             { showSetupError('Connection failed. Please try again.'); return; }
     token = val;
-    localStorage.setItem('github_token', token);
+    setCookie('github_token', token, 365);
+    try { localStorage.setItem('github_token', token); } catch {}
     showScreen('main-screen');
     loadAllNotes();
   } catch { showSetupError('Network error. Check your internet connection.'); }
@@ -81,7 +108,8 @@ function updateToken() {
   const val = document.getElementById('settings-token').value.trim();
   if (!val) { showToast('Please enter a token', 'error'); return; }
   token = val;
-  localStorage.setItem('github_token', token);
+  setCookie('github_token', token, 365);
+  try { localStorage.setItem('github_token', token); } catch {}
   closeModal('settings-modal');
   showToast('Token saved!', 'success');
   loadAllNotes();
@@ -90,7 +118,8 @@ function updateToken() {
 function disconnectVault() {
   if (!confirm('Disconnect your vault? You can reconnect anytime with your token.')) return;
   token = ''; allNotes = [];
-  localStorage.removeItem('github_token');
+  deleteCookie('github_token');
+  try { localStorage.removeItem('github_token'); } catch {}
   closeModal('settings-modal');
   showScreen('setup-screen');
   document.getElementById('setup-token-input').value = '';
@@ -119,13 +148,23 @@ async function fetchCategoryFiles(cat) {
   if (!res.ok) return [];
   const files = await res.json();
   if (!Array.isArray(files)) return [];
-  const mdFiles = files.filter(f => f.name.endsWith('.md') && f.name !== '.gitkeep');
+
+  const mdFiles  = files.filter(f => f.name.endsWith('.md') && f.name !== '.gitkeep');
+  const docFiles = files.filter(f => f.name.endsWith('.pdf') || f.name.endsWith('.docx'));
+
   const notes = await Promise.allSettled(mdFiles.map(f => fetchFileContent(f, cat)));
-  return notes.filter(r => r.status === 'fulfilled' && r.value).map(r => r.value);
+  const docs  = docFiles.map(f => fileToDocCard(f, cat));
+
+  return [
+    ...notes.filter(r => r.status === 'fulfilled' && r.value).map(r => r.value),
+    ...docs
+  ];
 }
 
 async function fetchFileContent(file, cat) {
-  const res = await fetch(file.download_url);
+  const res = await fetch(file.download_url, {
+    headers: { Authorization: `token ${token}` }
+  });
   if (!res.ok) return null;
   const raw = await res.text();
   return {
@@ -140,6 +179,26 @@ async function fetchFileContent(file, cat) {
     tags:     extractTags(raw),
     actions:  extractActions(raw),
     raw
+  };
+}
+
+// ===== DOCUMENT CARD BUILDER =====
+function fileToDocCard(file, cat) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  const nameWithoutExt = file.name.replace(/\.[^.]+$/, '');
+  const dateMatch = nameWithoutExt.match(/^(\d{4}-\d{2}-\d{2})/);
+  const date = dateMatch ? dateMatch[1] : '';
+  const displayName = nameWithoutExt
+    .replace(/^\d{4}-\d{2}-\d{2}-?/, '')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase()) || file.name;
+  return {
+    id: file.sha, sha: file.sha, name: file.name,
+    path: file.path, category: cat,
+    title: displayName || file.name, date,
+    preview: '', tags: [], actions: [], raw: '',
+    isDocument: true, docType: ext,
+    downloadUrl: file.download_url, size: file.size,
   };
 }
 
@@ -161,8 +220,8 @@ function extractDate(raw, filename) {
 
 function extractPreview(raw) {
   return raw
-    .replace(/^---[\s\S]*?^---\n?/m, '')          // strip frontmatter
-    .replace(/^## ✅ Follow-up Actions[\s\S]*/m, '') // strip actions section
+    .replace(/^---[\s\S]*?^---\n?/m, '')
+    .replace(/^## ✅ Follow-up Actions[\s\S]*/m, '')
     .replace(/^#.*$/gm, '')
     .replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
@@ -197,13 +256,19 @@ function formatDate(d) {
   catch { return d; }
 }
 
+function formatFileSize(bytes) {
+  if (!bytes || bytes === 0) return '';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
 // ===== MARKDOWN UPDATERS =====
 function updateTagsInRaw(raw, tags) {
   const tagStr = tags.map(t => t.startsWith('#') ? t : '#' + t).join(' ');
   if (raw.match(/^\*\*Tags:\*\*.*$/m)) {
     return raw.replace(/^\*\*Tags:\*\*.*$/m, `**Tags:** ${tagStr}`);
   }
-  // Insert after **Date:** line
   return raw.replace(/(\*\*Date:\*\*.*\n)/, `$1**Tags:** ${tagStr}\n`);
 }
 
@@ -232,7 +297,6 @@ async function updateNoteRaw(note, newRaw, message) {
   const result = await res.json();
   const newSha  = result.content.sha;
 
-  // Update note in memory
   const updated = {
     ...note,
     id:      newSha,
@@ -246,7 +310,6 @@ async function updateNoteRaw(note, newRaw, message) {
   const idx = allNotes.findIndex(n => n.id === note.id);
   if (idx !== -1) allNotes[idx] = updated;
 
-  // If this note is open in view modal, refresh it
   if (currentNoteId === note.id) {
     currentNoteId = newSha;
     refreshViewModal(updated);
@@ -270,7 +333,7 @@ function toggleFavouriteFromModal() {
   if (!note) return;
   toggleFavourite(note.path);
   updateFavBtnState(note.path);
-  applyFilters(); // re-sort so favourites float to top
+  applyFilters();
 }
 
 function updateFavBtnState(path) {
@@ -315,7 +378,7 @@ async function saveEdit() {
   }
 }
 
-// ===== DELETE =====
+// ===== DELETE NOTE =====
 async function deleteCurrentNote() {
   const note = getNoteById(currentNoteId);
   if (!note) return;
@@ -337,6 +400,107 @@ async function deleteCurrentNote() {
     showToast('Note deleted', 'success');
   } catch (e) {
     showToast(`Error: ${e.message}`, 'error');
+  }
+}
+
+// ===== DELETE DOCUMENT =====
+async function deleteDocument(id) {
+  const doc = getNoteById(id);
+  if (!doc) return;
+  if (!confirm(`Delete "${doc.name}"?\n\nThis cannot be undone.`)) return;
+  try {
+    const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${doc.path}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ message: `Delete: ${doc.name}`, sha: doc.sha })
+    });
+    if (!res.ok) { const e = await res.json(); throw new Error(e.message || 'Delete failed'); }
+    allNotes = allNotes.filter(n => n.id !== id);
+    applyFilters();
+    showToast('Document deleted', 'success');
+  } catch (e) {
+    showToast(`Error: ${e.message}`, 'error');
+  }
+}
+
+// ===== OPEN DOCUMENT =====
+async function openDocument(id) {
+  const doc = getNoteById(id);
+  if (!doc) return;
+  showToast('Loading...', '');
+  try {
+    const res = await fetch(doc.downloadUrl);
+    if (!res.ok) throw new Error('Failed to load document');
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    if (doc.docType === 'pdf') {
+      window.open(url, '_blank');
+    } else {
+      const a = document.createElement('a');
+      a.href = url; a.download = doc.name;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
+}
+
+// ===== UPLOAD DOCUMENT =====
+async function uploadDocument(e) {
+  e.preventDefault();
+  const fileInput = document.getElementById('upload-file-input');
+  const catId = document.getElementById('upload-category').value;
+  const file = fileInput.files[0];
+
+  if (!file) { showToast('Please select a file', 'error'); return; }
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (!['pdf', 'docx'].includes(ext)) {
+    showToast('Only PDF and DOCX files are supported', 'error'); return;
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    showToast('File too large (max 10 MB)', 'error'); return;
+  }
+
+  const btn = document.getElementById('upload-btn');
+  btn.disabled = true; btn.textContent = 'Uploading...';
+
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const uint8 = new Uint8Array(arrayBuffer);
+    // Chunk to avoid call stack overflow on large files
+    let binary = '';
+    const chunk = 8192;
+    for (let i = 0; i < uint8.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, uint8.subarray(i, i + chunk));
+    }
+    const encoded = btoa(binary);
+
+    const date = new Date().toISOString().split('T')[0];
+    const slug = file.name.replace(/\.[^.]+$/, '')
+      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+    const path = `${catId}/${date}-${slug}.${ext}`;
+
+    const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${path}`, {
+      method: 'PUT',
+      body: JSON.stringify({ message: `Upload: ${file.name}`, content: encoded })
+    });
+    if (!res.ok) { const err = await res.json(); throw new Error(err.message || 'Upload failed'); }
+
+    closeModal('upload-modal');
+    document.getElementById('upload-form').reset();
+    document.getElementById('selected-file-name').classList.add('hidden');
+    showToast('Document uploaded! ✓', 'success');
+    await loadAllNotes();
+  } catch (err) {
+    showToast(`Error: ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Upload Document';
+  }
+}
+
+function updateFileLabel(input) {
+  const hint = document.getElementById('selected-file-name');
+  if (input.files && input.files[0]) {
+    hint.textContent = `Selected: ${input.files[0].name} (${formatFileSize(input.files[0].size)})`;
+    hint.classList.remove('hidden');
   }
 }
 
@@ -452,11 +616,12 @@ function applyFilters() {
     notes = notes.filter(n =>
       n.title.toLowerCase().includes(searchQuery) ||
       n.raw.toLowerCase().includes(searchQuery) ||
+      n.name.toLowerCase().includes(searchQuery) ||
       n.tags.some(t => t.includes(searchQuery)) ||
       n.category.name.toLowerCase().includes(searchQuery)
     );
 
-  // Favourites float to top, then sort by date
+  // Favourites float to top
   notes = [
     ...notes.filter(n => isFavourite(n.path)),
     ...notes.filter(n => !isFavourite(n.path))
@@ -477,16 +642,23 @@ function renderNotes() {
     return;
   }
   empty.classList.add('hidden');
-  const total = allNotes.length, showing = filteredNotes.length;
-  const hasFilter = searchQuery || activeCategory !== 'all' || activeTag;
+
+  const total    = allNotes.length;
+  const showing  = filteredNotes.length;
+  const totalDocs  = allNotes.filter(n => n.isDocument).length;
+  const totalNotes = total - totalDocs;
+  const hasFilter  = searchQuery || activeCategory !== 'all' || activeTag;
+
   stats.textContent = hasFilter
-    ? `Showing ${showing} of ${total} notes`
-    : `${total} note${total !== 1 ? 's' : ''} in your vault`;
+    ? `Showing ${showing} of ${total} items`
+    : `${totalNotes} note${totalNotes !== 1 ? 's' : ''}${totalDocs > 0 ? ` · ${totalDocs} doc${totalDocs !== 1 ? 's' : ''}` : ''} in your vault`;
 
   grid.innerHTML = filteredNotes.map(note => noteCardHTML(note)).join('');
 }
 
 function noteCardHTML(note) {
+  if (note.isDocument) return docCardHTML(note);
+
   const title   = highlight(escapeHtml(note.title), searchQuery);
   const preview = highlight(escapeHtml(note.preview), searchQuery);
   const date    = formatDate(note.date);
@@ -524,11 +696,47 @@ function noteCardHTML(note) {
     </div>`;
 }
 
+function docCardHTML(doc) {
+  const isPdf  = doc.docType === 'pdf';
+  const icon   = isPdf ? '📕' : '📄';
+  const size   = formatFileSize(doc.size);
+  const date   = formatDate(doc.date);
+  const title  = highlight(escapeHtml(doc.title), searchQuery);
+
+  return `
+    <div class="note-card doc-card" onclick="openDocument('${escapeHtml(doc.id)}')">
+      <div class="card-top">
+        <div class="card-top-left">
+          <span class="cat-badge">${doc.category.emoji} ${escapeHtml(doc.category.name)}</span>
+          ${date ? `<span class="card-date">${date}</span>` : ''}
+        </div>
+        <button class="card-delete-doc-btn"
+          onclick="event.stopPropagation(); deleteDocument('${escapeHtml(doc.id)}')"
+          title="Delete document">
+          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+        </button>
+      </div>
+      <div class="doc-card-body">
+        <div class="doc-icon-large">${icon}</div>
+        <div class="doc-info">
+          <div class="card-title">${title}</div>
+          <div class="doc-meta">
+            <span class="doc-type-badge doc-type-${doc.docType}">${doc.docType.toUpperCase()}</span>
+            ${size ? `<span class="doc-size">${size}</span>` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="card-footer">
+        <span class="read-more">${isPdf ? 'Preview →' : 'Download →'}</span>
+      </div>
+    </div>`;
+}
+
 function cardToggleFav(id) {
   const note = getNoteById(id);
   if (!note) return;
   toggleFavourite(note.path);
-  applyFilters(); // re-renders cards with updated star state
+  applyFilters();
 }
 
 function showLoadingState() {
@@ -563,7 +771,6 @@ function viewNote(id) {
   if (!note) return;
   currentNoteId = id;
 
-  // Ensure edit mode is hidden
   document.getElementById('edit-mode').classList.add('hidden');
   document.getElementById('view-mode').classList.remove('hidden');
   document.getElementById('edit-btn').style.display = '';
@@ -640,7 +847,6 @@ async function saveNote(e) {
     const slug  = title.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-').slice(0, 60);
     const path  = `${catId}/${date}-${slug}.md`;
 
-    // Parse tags from input
     const tagList = rawTags
       ? rawTags.split(/[\s,]+/).filter(Boolean).map(t => {
           t = t.toLowerCase().replace(/[^#a-z0-9_-]/g, '');
@@ -679,10 +885,11 @@ function buildCategoryFilters() {
 }
 
 function buildCategorySelect() {
-  document.getElementById('note-category').innerHTML =
-    CONFIG.categories.map(cat =>
-      `<option value="${cat.id}">${cat.emoji} ${cat.name}</option>`
-    ).join('');
+  const opts = CONFIG.categories.map(cat =>
+    `<option value="${cat.id}">${cat.emoji} ${cat.name}</option>`
+  ).join('');
+  document.getElementById('note-category').innerHTML = opts;
+  document.getElementById('upload-category').innerHTML = opts;
 }
 
 // ===== MODALS =====
@@ -703,7 +910,7 @@ function modalBackdropClick(e, id) {
 }
 
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') ['add-modal', 'view-modal', 'settings-modal'].forEach(closeModal);
+  if (e.key === 'Escape') ['add-modal', 'view-modal', 'settings-modal', 'upload-modal'].forEach(closeModal);
 });
 
 // ===== TOAST =====

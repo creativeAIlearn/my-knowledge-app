@@ -685,4 +685,76 @@ mark { background: #fef08a; color: inherit; border-radius: 2px; padding: 0 1px; 
   .add-action-row .date-input { width: 100% !important; }
   .view-toolbar { gap: 2px; }
   .tool-btn { width: 30px; height: 30px; }
+  .fab-upload { bottom: 84px; }
+  .card-delete-doc-btn { opacity: 1; }
 }
+
+/* ===== Document Cards ===== */
+.doc-card-body {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.doc-icon-large {
+  font-size: 38px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.doc-info { flex: 1; min-width: 0; }
+.doc-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.doc-type-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 50px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.doc-type-pdf  { background: #fee2e2; color: #dc2626; }
+.doc-type-docx { background: #dbeafe; color: #1d4ed8; }
+.doc-size { font-size: 12px; color: var(--text-muted); }
+
+/* Delete button on document cards (hidden until hover) */
+.card-delete-doc-btn {
+  width: 28px; height: 28px;
+  border: none; background: transparent;
+  color: var(--text-light);
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 6px;
+  transition: all 0.15s;
+  flex-shrink: 0;
+  opacity: 0;
+}
+.note-card:hover .card-delete-doc-btn { opacity: 1; }
+.card-delete-doc-btn:hover { color: var(--danger); background: var(--danger-light); }
+
+/* ===== Upload FAB ===== */
+.fab-upload {
+  bottom: 96px;
+  background: #059669;
+  box-shadow: 0 4px 20px rgba(5,150,105,0.45);
+}
+.fab-upload:hover { background: #047857; transform: scale(1.08); }
+.fab-upload:active { transform: scale(0.96); }
+
+/* ===== File Drop Area ===== */
+.file-drop-area {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius-sm);
+  padding: 24px 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: var(--bg);
+  user-select: none;
+}
+.file-drop-area:hover { border-color: var(--primary); background: var(--primary-light); }
+.file-drop-icon { font-size: 28px; margin-bottom: 6px; }
+.file-drop-text { font-size: 14px; font-weight: 500; color: var(--text); }
+.file-drop-hint { font-size: 12px; color: var(--text-light); margin-top: 4px; }

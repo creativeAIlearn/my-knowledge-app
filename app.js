@@ -155,7 +155,7 @@ async function fetchCategoryFiles(cat) {
   const files = await res.json();
   if (!Array.isArray(files)) return [];
 
-  const mdFiles  = files.filter(f => f.name.endsWith('.md') && f.name !== '.gitkeep');
+  const mdFiles  = files.filter(f => (f.name.endsWith('.md') || f.name.endsWith('.txt')) && f.name !== '.gitkeep');
   const docFiles = files.filter(f => f.name.endsWith('.pdf') || f.name.endsWith('.docx'));
 
   const notes = await Promise.allSettled(mdFiles.map(f => fetchFileContent(f, cat)));
@@ -168,28 +168,35 @@ async function fetchCategoryFiles(cat) {
 }
 
 async function fetchFileContent(file, cat) {
-  // Use the Contents API (not download_url) so auth works for private repos.
-  // raw.githubusercontent.com blocks Authorization headers in CORS preflight.
-  const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${file.path}`);
-  if (!res.ok) return null;
-  const data = await res.json();
-  if (!data.content) return null;
-  // Decode base64-encoded UTF-8 content returned by the API
-  const bytes = Uint8Array.from(atob(data.content.replace(/\n/g, '')), c => c.charCodeAt(0));
-  const raw = new TextDecoder().decode(bytes);
-  return {
-    id:       data.sha,
-    sha:      data.sha,
-    name:     file.name,
-    path:     file.path,
-    category: cat,
-    title:    extractTitle(raw, file.name),
-    date:     extractDate(raw, file.name),
-    preview:  extractPreview(raw),
-    tags:     extractTags(raw),
-    actions:  extractActions(raw),
-    raw
-  };
+  try {
+    // Use file.url from the directory listing (GitHub-provided, correctly encoded).
+    // Use the .raw Accept header to get plain text directly — avoids base64
+    // decode entirely, which was silently failing inside Promise.allSettled.
+    const res = await fetch(file.url, {
+      headers: {
+        Authorization: `token ${token}`,
+        Accept: 'application/vnd.github.v3.raw',
+      }
+    });
+    if (!res.ok) return null;
+    const raw = await res.text();
+    return {
+      id:       file.sha,
+      sha:      file.sha,
+      name:     file.name,
+      path:     file.path,
+      category: cat,
+      title:    extractTitle(raw, file.name),
+      date:     extractDate(raw, file.name),
+      preview:  extractPreview(raw),
+      tags:     extractTags(raw),
+      actions:  extractActions(raw),
+      raw
+    };
+  } catch (e) {
+    console.error('fetchFileContent failed:', file.path, e);
+    return null;
+  }
 }
 
 // ===== DOCUMENT CARD BUILDER =====
@@ -216,8 +223,9 @@ function fileToDocCard(file, cat) {
 function extractTitle(raw, filename) {
   const h1 = raw.match(/^#\s+(.+)$/m);
   if (h1) return h1[1].trim();
-  const name = filename.replace(/\.md$/, '').replace(/^\d{4}-\d{2}-\d{2}-?/, '');
-  return name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  // Strip .md or .txt extension, then strip leading date prefix (e.g. 2026-03-04-)
+  const name = filename.replace(/\.(md|txt)$/, '').replace(/^\d{4}-\d{2}-\d{2}-?/, '');
+  return name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || filename;
 }
 
 function extractDate(raw, filename) {

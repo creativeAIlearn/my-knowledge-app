@@ -169,15 +169,12 @@ async function fetchCategoryFiles(cat) {
 
 async function fetchFileContent(file, cat) {
   try {
-    // Use file.url from the directory listing (GitHub-provided, correctly encoded).
-    // Use the .raw Accept header to get plain text directly — avoids base64
-    // decode entirely, which was silently failing inside Promise.allSettled.
-    const res = await fetch(file.url, {
-      headers: {
-        Authorization: `token ${token}`,
-        Accept: 'application/vnd.github.v3.raw',
-      }
-    });
+    // Private repo download_urls already contain an embedded ?token=xxx so no
+    // Authorization header is needed. Adding one would trigger a CORS preflight
+    // against raw.githubusercontent.com, which returns 403 — silently dropping
+    // every note. Fetching without the header is a simple cross-origin GET that
+    // raw.githubusercontent.com allows with Access-Control-Allow-Origin: *.
+    const res = await fetch(file.download_url);
     if (!res.ok) return null;
     const raw = await res.text();
     return {

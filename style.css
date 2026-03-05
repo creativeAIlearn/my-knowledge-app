@@ -323,6 +323,7 @@ a:hover { text-decoration: underline; }
 .empty-state { text-align: center; padding: 80px 20px; color: var(--text-muted); }
 .empty-icon { font-size: 48px; margin-bottom: 16px; }
 .empty-state p { font-size: 15px; }
+.empty-state .btn-primary { margin-top: 20px; }
 
 /* ===== FAB ===== */
 .fab {

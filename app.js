@@ -43,13 +43,14 @@ if (token) {
   try { localStorage.setItem('github_token', token); } catch {}
 }
 
-let allNotes     = [];
+let allNotes      = [];
 let filteredNotes = [];
 let activeCategory = 'all';
 let activeTag      = '';
 let searchQuery    = '';
 let searchDebounce = null;
 let currentNoteId  = null;
+let vaultAuthError = false;   // true when API returns 401/403
 let favourites     = new Set(JSON.parse(localStorage.getItem('vault_favourites') || '[]'));
 
 // ===== INIT =====
@@ -128,14 +129,18 @@ function disconnectVault() {
 
 // ===== LOAD NOTES =====
 async function loadAllNotes(showRefreshToast = false) {
-  showLoadingState(); allNotes = [];
+  showLoadingState(); allNotes = []; vaultAuthError = false;
   try {
     const results = await Promise.allSettled(CONFIG.categories.map(cat => fetchCategoryFiles(cat)));
     results.forEach(r => { if (r.status === 'fulfilled') allNotes.push(...r.value); });
     allNotes.sort((a, b) => b.date !== a.date ? b.date.localeCompare(a.date) : b.name.localeCompare(a.name));
     applyFilters();
     buildTagFilters();
-    if (showRefreshToast) showToast('Vault refreshed!', 'success');
+    if (vaultAuthError) {
+      showToast('Token invalid or expired — open Settings to update it', 'error');
+    } else if (showRefreshToast) {
+      showToast('Vault refreshed!', 'success');
+    }
   } catch {
     showToast('Failed to load vault. Check your token.', 'error');
     document.getElementById('notes-grid').innerHTML = '';
@@ -145,6 +150,7 @@ async function loadAllNotes(showRefreshToast = false) {
 
 async function fetchCategoryFiles(cat) {
   const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${cat.id}`);
+  if (res.status === 401 || res.status === 403) { vaultAuthError = true; return []; }
   if (!res.ok) return [];
   const files = await res.json();
   if (!Array.isArray(files)) return [];
@@ -647,7 +653,27 @@ function renderNotes() {
   const stats = document.getElementById('stats-bar');
 
   if (filteredNotes.length === 0) {
-    grid.innerHTML = ''; empty.classList.remove('hidden'); stats.textContent = '';
+    grid.innerHTML = ''; stats.textContent = '';
+    const hasFilter = searchQuery || activeCategory !== 'all' || activeTag;
+    const icon   = document.getElementById('empty-icon');
+    const msg    = document.getElementById('empty-msg');
+    const action = document.getElementById('empty-action');
+    if (vaultAuthError) {
+      icon.textContent   = '🔑';
+      msg.textContent    = 'Token invalid or expired. Update it to reconnect to your vault.';
+      action.textContent = 'Update Token';
+      action.classList.remove('hidden');
+    } else if (!hasFilter && allNotes.length === 0) {
+      icon.textContent   = '🗄️';
+      msg.textContent    = 'Your vault is empty or the category folders don\'t exist yet. Add a note or check your token.';
+      action.textContent = 'Connect / Update Token';
+      action.classList.remove('hidden');
+    } else {
+      icon.textContent = '🔍';
+      msg.textContent  = 'Nothing found. Try a different search or filter.';
+      action.classList.add('hidden');
+    }
+    empty.classList.remove('hidden');
     return;
   }
   empty.classList.add('hidden');

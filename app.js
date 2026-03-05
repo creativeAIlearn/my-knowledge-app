@@ -162,14 +162,18 @@ async function fetchCategoryFiles(cat) {
 }
 
 async function fetchFileContent(file, cat) {
-  const res = await fetch(file.download_url, {
-    headers: { Authorization: `token ${token}` }
-  });
+  // Use the Contents API (not download_url) so auth works for private repos.
+  // raw.githubusercontent.com blocks Authorization headers in CORS preflight.
+  const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${file.path}`);
   if (!res.ok) return null;
-  const raw = await res.text();
+  const data = await res.json();
+  if (!data.content) return null;
+  // Decode base64-encoded UTF-8 content returned by the API
+  const bytes = Uint8Array.from(atob(data.content.replace(/\n/g, '')), c => c.charCodeAt(0));
+  const raw = new TextDecoder().decode(bytes);
   return {
-    id:       file.sha,
-    sha:      file.sha,
+    id:       data.sha,
+    sha:      data.sha,
     name:     file.name,
     path:     file.path,
     category: cat,
@@ -428,10 +432,15 @@ async function openDocument(id) {
   if (!doc) return;
   showToast('Loading...', '');
   try {
-    const res = await fetch(doc.downloadUrl);
+    // Fetch via Contents API with auth (raw URL blocks auth headers cross-origin)
+    const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${doc.path}`);
     if (!res.ok) throw new Error('Failed to load document');
-    const blob = await res.blob();
-    const url  = URL.createObjectURL(blob);
+    const data = await res.json();
+    if (!data.content) throw new Error('No content returned');
+    const bytes = Uint8Array.from(atob(data.content.replace(/\n/g, '')), c => c.charCodeAt(0));
+    const mime  = doc.docType === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    const blob  = new Blob([bytes], { type: mime });
+    const url   = URL.createObjectURL(blob);
     if (doc.docType === 'pdf') {
       window.open(url, '_blank');
     } else {

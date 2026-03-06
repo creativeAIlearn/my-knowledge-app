@@ -169,17 +169,19 @@ async function fetchCategoryFiles(cat) {
 
 async function fetchFileContent(file, cat) {
   try {
-    // Private repo download_urls already contain an embedded ?token=xxx so no
-    // Authorization header is needed. Adding one would trigger a CORS preflight
-    // against raw.githubusercontent.com, which returns 403 — silently dropping
-    // every note. Fetching without the header is a simple cross-origin GET that
-    // raw.githubusercontent.com allows with Access-Control-Allow-Origin: *.
-    const res = await fetch(file.download_url);
+    // Use the Contents API (api.github.com) which properly supports CORS with
+    // Authorization headers. Avoid raw.githubusercontent.com — private repos
+    // don't return CORS headers there, silently dropping every note in browser.
+    const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${file.path}`);
     if (!res.ok) return null;
-    const raw = await res.text();
+    const data = await res.json();
+    if (!data.content) return null;
+    // Decode base64 content, preserving UTF-8 characters
+    const bytes = Uint8Array.from(atob(data.content.replace(/\n/g, '')), c => c.charCodeAt(0));
+    const raw = new TextDecoder('utf-8').decode(bytes);
     return {
-      id:       file.sha,
-      sha:      file.sha,
+      id:       data.sha,
+      sha:      data.sha,
       name:     file.name,
       path:     file.path,
       category: cat,

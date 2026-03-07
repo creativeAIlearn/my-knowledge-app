@@ -6,6 +6,7 @@
   <title>My Ideas Vault</title>
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mammoth/mammoth.browser.min.js"></script>
 </head>
 <body>
   <div id="app">
@@ -74,112 +75,52 @@
         </div>
       </main>
 
-      <!-- Upload Document FAB -->
-      <button class="fab fab-upload" onclick="openModal('upload-modal')" title="Upload document">
-        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-      </button>
-
-      <!-- Add Note FAB -->
-      <button class="fab" onclick="openModal('add-modal')" title="Add new idea">
+      <!-- FAB -->
+      <button class="fab" onclick="openModal('add-modal')" title="New entry">
         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       </button>
 
     </div>
 
-    <!-- Add Note Modal -->
+    <!-- New Entry Modal (unified: note + optional document) -->
     <div id="add-modal" class="modal hidden" onclick="modalBackdropClick(event, 'add-modal')">
       <div class="modal-card">
         <div class="modal-header">
-          <h3>Save New Idea</h3>
+          <h3>New Entry</h3>
           <button class="close-btn" onclick="closeModal('add-modal')">×</button>
         </div>
-        <form id="add-form" onsubmit="saveNote(event)">
+        <form id="add-form" onsubmit="saveEntry(event)">
           <div class="form-group">
-            <label for="note-title">Title <span class="required">*</span></label>
-            <input type="text" id="note-title" placeholder="What's on your mind?" required autocomplete="off" />
+            <label for="entry-title">Title <span class="required">*</span></label>
+            <input type="text" id="entry-title" placeholder="What's on your mind?" required autocomplete="off" />
           </div>
           <div class="form-group">
-            <label for="note-category">Category <span class="required">*</span></label>
-            <select id="note-category"></select>
+            <label for="entry-category">Category <span class="required">*</span></label>
+            <select id="entry-category"></select>
           </div>
           <div class="form-group">
-            <label for="note-tags-input">Tags <span class="label-hint">(optional · space-separated)</span></label>
-            <input type="text" id="note-tags-input" placeholder="#AI #stocks #india" autocomplete="off" />
+            <label for="entry-tags-input">Tags <span class="label-hint">(optional · space-separated)</span></label>
+            <input type="text" id="entry-tags-input" placeholder="#AI #stocks #india" autocomplete="off" />
           </div>
           <div class="form-group">
-            <label for="note-content">Content</label>
-            <textarea id="note-content" placeholder="Write your idea, learning, or inspiration..." rows="6"></textarea>
+            <label for="entry-content">Context / Description</label>
+            <textarea id="entry-content" placeholder="Write your idea, notes, or description..." rows="5"></textarea>
+          </div>
+          <div class="form-group">
+            <label>Attach Document <span class="label-hint">(optional · PDF or DOCX, max 10 MB)</span></label>
+            <div class="file-drop-area" id="entry-file-drop" onclick="document.getElementById('entry-file-input').click()">
+              <div class="file-drop-icon">📎</div>
+              <div class="file-drop-text">Click to attach a PDF or DOCX file</div>
+              <div class="file-drop-hint">Optional — every entry always has written context above</div>
+              <input type="file" id="entry-file-input" accept=".pdf,.docx" class="hidden" onchange="updateEntryFileLabel(this)" />
+            </div>
+            <p id="entry-file-label" class="field-hint hidden"></p>
           </div>
           <div class="form-actions">
             <button type="button" class="btn-secondary" onclick="closeModal('add-modal')">Cancel</button>
-            <button type="submit" class="btn-primary" id="save-btn">Save to Vault</button>
+            <button type="submit" class="btn-primary" id="entry-save-btn">Save to Vault</button>
           </div>
         </form>
-      </div>
-    </div>
-
-    <!-- View Note Modal -->
-    <div id="view-modal" class="modal hidden" onclick="modalBackdropClick(event, 'view-modal')">
-      <div class="modal-card modal-card-wide">
-
-        <!-- Modal Header -->
-        <div class="modal-header">
-          <div class="view-meta">
-            <span id="view-badge" class="cat-badge"></span>
-            <span id="view-date" class="view-date"></span>
-          </div>
-          <div class="view-toolbar">
-            <button class="tool-btn star-btn" id="fav-btn" onclick="toggleFavouriteFromModal()" title="Favourite">☆</button>
-            <button class="tool-btn edit-btn" id="edit-btn" onclick="startEdit()" title="Edit note">
-              <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-            </button>
-            <button class="tool-btn delete-btn" onclick="deleteCurrentNote()" title="Delete note">
-              <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-            </button>
-            <button class="close-btn" onclick="closeModal('view-modal')">×</button>
-          </div>
-        </div>
-
-        <!-- VIEW MODE -->
-        <div id="view-mode">
-          <div id="view-content" class="view-content markdown-body"></div>
-
-          <!-- Tags -->
-          <div class="note-section">
-            <div class="note-section-label">🏷️ Tags</div>
-            <div id="view-tags" class="tags-row"></div>
-            <div class="inline-add-row">
-              <input type="text" id="tag-input" class="inline-input" placeholder="#AI or just AI"
-                autocomplete="off"
-                onkeydown="if(event.key==='Enter'){event.preventDefault();addTagToNote();}" />
-              <button class="btn-sm-primary" onclick="addTagToNote()">Add</button>
-            </div>
-          </div>
-
-          <!-- Follow-up Actions -->
-          <div class="note-section">
-            <div class="note-section-label">✅ Follow-up Actions</div>
-            <ul id="view-actions" class="actions-list"></ul>
-            <div class="inline-add-row add-action-row">
-              <input type="text" id="action-input" class="inline-input" placeholder="Add an action item..."
-                autocomplete="off"
-                onkeydown="if(event.key==='Enter'){event.preventDefault();addActionToNote();}" />
-              <input type="date" id="action-due" class="date-input" title="Due date (optional)" />
-              <button class="btn-sm-primary" onclick="addActionToNote()">Add</button>
-            </div>
-          </div>
-        </div>
-
-        <!-- EDIT MODE -->
-        <div id="edit-mode" class="hidden">
-          <div class="edit-hint">Editing raw markdown — all sections (tags, actions) are included below.</div>
-          <textarea id="edit-textarea" class="edit-textarea"></textarea>
-          <div class="form-actions">
-            <button class="btn-secondary" onclick="cancelEdit()">Cancel</button>
-            <button class="btn-primary" id="edit-save-btn" onclick="saveEdit()">Save Changes</button>
-          </div>
-        </div>
-
       </div>
     </div>
 
@@ -202,35 +143,93 @@
       </div>
     </div>
 
-    <!-- Upload Document Modal -->
-    <div id="upload-modal" class="modal hidden" onclick="modalBackdropClick(event, 'upload-modal')">
-      <div class="modal-card">
-        <div class="modal-header">
-          <h3>Upload Document</h3>
-          <button class="close-btn" onclick="closeModal('upload-modal')">×</button>
+    <!-- Entry Preview Panel -->
+    <div id="entry-panel" class="entry-panel hidden" role="dialog" aria-modal="true">
+      <div class="panel-header">
+        <div class="panel-meta">
+          <span id="panel-badge" class="cat-badge"></span>
+          <span id="panel-date" class="view-date"></span>
         </div>
-        <form id="upload-form" onsubmit="uploadDocument(event)">
-          <div class="form-group">
-            <label for="upload-category">Category <span class="required">*</span></label>
-            <select id="upload-category"></select>
-          </div>
-          <div class="form-group">
-            <label>Document <span class="required">*</span></label>
-            <div class="file-drop-area" onclick="document.getElementById('upload-file-input').click()">
-              <div class="file-drop-icon">📎</div>
-              <div class="file-drop-text">Click to select a PDF or DOCX file</div>
-              <div class="file-drop-hint">Max 10 MB</div>
-              <input type="file" id="upload-file-input" accept=".pdf,.docx" class="hidden" onchange="updateFileLabel(this)" />
-            </div>
-            <p id="selected-file-name" class="field-hint hidden"></p>
-          </div>
-          <div class="form-actions">
-            <button type="button" class="btn-secondary" onclick="closeModal('upload-modal')">Cancel</button>
-            <button type="submit" class="btn-primary" id="upload-btn">Upload Document</button>
-          </div>
-        </form>
+        <div class="panel-toolbar">
+          <button class="tool-btn star-btn" id="panel-fav-btn" onclick="toggleFavFromPanel()" title="Favourite">☆</button>
+          <button class="tool-btn edit-btn" id="panel-edit-btn" onclick="startPanelEdit()" title="Edit note">
+            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+          <button class="tool-btn delete-btn" onclick="deleteCurrentEntry()" title="Delete">
+            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          </button>
+          <button class="close-btn" onclick="closePanel()">×</button>
+        </div>
       </div>
+
+      <div class="panel-body">
+        <h2 id="panel-title" class="panel-title"></h2>
+
+        <!-- VIEW MODE -->
+        <div id="panel-view-mode">
+
+          <!-- Note content -->
+          <div id="panel-note-section">
+            <div id="panel-note-content" class="view-content markdown-body"></div>
+
+            <!-- Tags -->
+            <div class="note-section">
+              <div class="note-section-label">🏷️ Tags</div>
+              <div id="panel-tags" class="tags-row"></div>
+              <div class="inline-add-row">
+                <input type="text" id="panel-tag-input" class="inline-input" placeholder="#AI or just AI"
+                  autocomplete="off"
+                  onkeydown="if(event.key==='Enter'){event.preventDefault();addTagFromPanel();}" />
+                <button class="btn-sm-primary" onclick="addTagFromPanel()">Add</button>
+              </div>
+            </div>
+
+            <!-- Follow-up Actions -->
+            <div class="note-section">
+              <div class="note-section-label">✅ Follow-up Actions</div>
+              <ul id="panel-actions" class="actions-list"></ul>
+              <div class="inline-add-row add-action-row">
+                <input type="text" id="panel-action-input" class="inline-input" placeholder="Add an action item..."
+                  autocomplete="off"
+                  onkeydown="if(event.key==='Enter'){event.preventDefault();addActionFromPanel();}" />
+                <input type="date" id="panel-action-due" class="date-input" title="Due date (optional)" />
+                <button class="btn-sm-primary" onclick="addActionFromPanel()">Add</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Document viewer section -->
+          <div id="panel-doc-section" class="panel-doc-section hidden">
+            <div class="note-section doc-viewer-header">
+              <div class="doc-viewer-label">
+                <span id="panel-doc-icon">📕</span>
+                <span id="panel-doc-name" class="doc-viewer-name"></span>
+                <span id="panel-doc-type-badge" class="doc-type-badge"></span>
+                <span id="panel-doc-size" class="doc-size"></span>
+              </div>
+              <div id="panel-doc-viewer" class="panel-doc-viewer">
+                <div class="doc-loading"><div class="spinner"></div><span>Loading document...</span></div>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- end VIEW MODE -->
+
+        <!-- EDIT MODE -->
+        <div id="panel-edit-mode" class="hidden">
+          <div class="edit-hint">Editing raw markdown — tags, actions, and document reference are included below.</div>
+          <textarea id="panel-edit-textarea" class="edit-textarea"></textarea>
+          <div class="form-actions">
+            <button class="btn-secondary" onclick="cancelPanelEdit()">Cancel</button>
+            <button class="btn-primary" id="panel-save-btn" onclick="savePanelEdit()">Save Changes</button>
+          </div>
+        </div>
+
+      </div><!-- end panel-body -->
     </div>
+
+    <!-- Panel overlay -->
+    <div id="panel-overlay" class="panel-overlay hidden" onclick="closePanel()"></div>
 
     <!-- Toast -->
     <div id="toast" class="toast hidden"></div>

@@ -32,12 +32,10 @@ function deleteCookie(name) {
 }
 
 // ===== STATE =====
-// Read token from cookie first, then fall back to localStorage
 let token = getCookie('github_token');
 if (!token) {
   try { token = localStorage.getItem('github_token') || ''; } catch { token = ''; }
 }
-// Ensure it is written to both stores so both survive independent cache/data clears
 if (token) {
   setCookie('github_token', token, 365);
   try { localStorage.setItem('github_token', token); } catch {}
@@ -49,8 +47,9 @@ let activeCategory = 'all';
 let activeTag      = '';
 let searchQuery    = '';
 let searchDebounce = null;
-let currentNoteId  = null;
-let vaultAuthError = false;   // true when API returns 401/403
+let panelNoteId    = null;
+let panelDocBlobUrl = null;
+let vaultAuthError = false;
 let favourites     = new Set(JSON.parse(localStorage.getItem('vault_favourites') || '[]'));
 
 // ===== INIT =====
@@ -158,27 +157,43 @@ async function fetchCategoryFiles(cat) {
   const mdFiles  = files.filter(f => (f.name.endsWith('.md') || f.name.endsWith('.txt')) && f.name !== '.gitkeep');
   const docFiles = files.filter(f => f.name.endsWith('.pdf') || f.name.endsWith('.docx'));
 
-  const notes = await Promise.allSettled(mdFiles.map(f => fetchFileContent(f, cat)));
-  const docs  = docFiles.map(f => fileToDocCard(f, cat));
+  // Build a map of doc files by filename so notes can link to them
+  const docMap = {};
+  docFiles.forEach(f => { docMap[f.name] = f; });
 
-  return [
-    ...notes.filter(r => r.status === 'fulfilled' && r.value).map(r => r.value),
-    ...docs
-  ];
+  const noteResults = await Promise.allSettled(mdFiles.map(f => fetchFileContent(f, cat, docMap)));
+  const notes = noteResults.filter(r => r.status === 'fulfilled' && r.value).map(r => r.value);
+
+  // Any doc files not linked to a .md become legacy standalone cards
+  const linkedDocNames = new Set(notes.map(n => n.docName).filter(Boolean));
+  const legacyDocs = docFiles.filter(f => !linkedDocNames.has(f.name)).map(f => legacyDocCard(f, cat));
+
+  return [...notes, ...legacyDocs];
 }
 
-async function fetchFileContent(file, cat) {
+async function fetchFileContent(file, cat, docMap = {}) {
   try {
-    // Use the Contents API (api.github.com) which properly supports CORS with
-    // Authorization headers. Avoid raw.githubusercontent.com — private repos
-    // don't return CORS headers there, silently dropping every note in browser.
     const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${file.path}`);
     if (!res.ok) return null;
     const data = await res.json();
     if (!data.content) return null;
-    // Decode base64 content, preserving UTF-8 characters
     const bytes = Uint8Array.from(atob(data.content.replace(/\n/g, '')), c => c.charCodeAt(0));
     const raw = new TextDecoder('utf-8').decode(bytes);
+
+    // Check if this note references an attached document
+    const docRef = extractDocumentRef(raw);
+    let docInfo = {};
+    if (docRef && docMap[docRef]) {
+      const df = docMap[docRef];
+      docInfo = {
+        docName: df.name,
+        docPath: df.path,
+        docSha:  df.sha,
+        docType: df.name.split('.').pop().toLowerCase(),
+        docSize: df.size,
+      };
+    }
+
     return {
       id:       data.sha,
       sha:      data.sha,
@@ -190,7 +205,8 @@ async function fetchFileContent(file, cat) {
       preview:  extractPreview(raw),
       tags:     extractTags(raw),
       actions:  extractActions(raw),
-      raw
+      raw,
+      ...docInfo
     };
   } catch (e) {
     console.error('fetchFileContent failed:', file.path, e);
@@ -198,8 +214,8 @@ async function fetchFileContent(file, cat) {
   }
 }
 
-// ===== DOCUMENT CARD BUILDER =====
-function fileToDocCard(file, cat) {
+// ===== LEGACY DOC CARD (no matching .md) =====
+function legacyDocCard(file, cat) {
   const ext = file.name.split('.').pop().toLowerCase();
   const nameWithoutExt = file.name.replace(/\.[^.]+$/, '');
   const dateMatch = nameWithoutExt.match(/^(\d{4}-\d{2}-\d{2})/);
@@ -213,8 +229,9 @@ function fileToDocCard(file, cat) {
     path: file.path, category: cat,
     title: displayName || file.name, date,
     preview: '', tags: [], actions: [], raw: '',
-    isDocument: true, docType: ext,
-    downloadUrl: file.download_url, size: file.size,
+    isLegacyDoc: true,
+    docName: file.name, docPath: file.path, docSha: file.sha,
+    docType: ext, docSize: file.size,
   };
 }
 
@@ -222,7 +239,6 @@ function fileToDocCard(file, cat) {
 function extractTitle(raw, filename) {
   const h1 = raw.match(/^#\s+(.+)$/m);
   if (h1) return h1[1].trim();
-  // Strip .md or .txt extension, then strip leading date prefix (e.g. 2026-03-04-)
   const name = filename.replace(/\.(md|txt)$/, '').replace(/^\d{4}-\d{2}-\d{2}-?/, '');
   return name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || filename;
 }
@@ -233,6 +249,11 @@ function extractDate(raw, filename) {
   const f = filename.match(/^(\d{4}-\d{2}-\d{2})/);
   if (f) return f[1];
   return '';
+}
+
+function extractDocumentRef(raw) {
+  const m = raw.match(/^\*\*Document:\*\*\s*(.+)$/m);
+  return m ? m[1].trim() : null;
 }
 
 function extractPreview(raw) {
@@ -327,9 +348,9 @@ async function updateNoteRaw(note, newRaw, message) {
   const idx = allNotes.findIndex(n => n.id === note.id);
   if (idx !== -1) allNotes[idx] = updated;
 
-  if (currentNoteId === note.id) {
-    currentNoteId = newSha;
-    refreshViewModal(updated);
+  if (panelNoteId === note.id) {
+    panelNoteId = newSha;
+    refreshPanel(updated);
   }
   applyFilters();
   buildTagFilters();
@@ -345,16 +366,16 @@ function toggleFavourite(path) {
   localStorage.setItem('vault_favourites', JSON.stringify([...favourites]));
 }
 
-function toggleFavouriteFromModal() {
-  const note = getNoteById(currentNoteId);
+function toggleFavFromPanel() {
+  const note = getNoteById(panelNoteId);
   if (!note) return;
   toggleFavourite(note.path);
-  updateFavBtnState(note.path);
+  updatePanelFavState(note.path);
   applyFilters();
 }
 
-function updateFavBtnState(path) {
-  const btn = document.getElementById('fav-btn');
+function updatePanelFavState(path) {
+  const btn = document.getElementById('panel-fav-btn');
   if (!btn) return;
   const fav = isFavourite(path);
   btn.textContent = fav ? '★' : '☆';
@@ -362,180 +383,16 @@ function updateFavBtnState(path) {
   btn.title = fav ? 'Remove from favourites' : 'Add to favourites';
 }
 
-// ===== EDIT =====
-function startEdit() {
-  const note = getNoteById(currentNoteId);
-  if (!note) return;
-  document.getElementById('edit-textarea').value = note.raw;
-  document.getElementById('view-mode').classList.add('hidden');
-  document.getElementById('edit-mode').classList.remove('hidden');
-  document.getElementById('edit-btn').style.display = 'none';
-}
-
-function cancelEdit() {
-  document.getElementById('edit-mode').classList.add('hidden');
-  document.getElementById('view-mode').classList.remove('hidden');
-  document.getElementById('edit-btn').style.display = '';
-}
-
-async function saveEdit() {
-  const note = getNoteById(currentNoteId);
-  if (!note) return;
-  const newRaw = document.getElementById('edit-textarea').value;
-  const btn = document.getElementById('edit-save-btn');
-  btn.disabled = true; btn.textContent = 'Saving...';
-  try {
-    await updateNoteRaw(note, newRaw, `Update: ${note.title}`);
-    cancelEdit();
-    showToast('Note updated!', 'success');
-  } catch (e) {
-    showToast(`Error: ${e.message}`, 'error');
-  } finally {
-    btn.disabled = false; btn.textContent = 'Save Changes';
-  }
-}
-
-// ===== DELETE NOTE =====
-async function deleteCurrentNote() {
-  const note = getNoteById(currentNoteId);
-  if (!note) return;
-  if (!confirm(`Delete "${note.title}"?\n\nThis cannot be undone.`)) return;
-
-  try {
-    const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${note.path}`, {
-      method: 'DELETE',
-      body: JSON.stringify({ message: `Delete: ${note.title}`, sha: note.sha })
-    });
-    if (!res.ok) { const e = await res.json(); throw new Error(e.message || 'Delete failed'); }
-
-    allNotes = allNotes.filter(n => n.id !== currentNoteId);
-    favourites.delete(note.path);
-    localStorage.setItem('vault_favourites', JSON.stringify([...favourites]));
-    closeModal('view-modal');
-    applyFilters();
-    buildTagFilters();
-    showToast('Note deleted', 'success');
-  } catch (e) {
-    showToast(`Error: ${e.message}`, 'error');
-  }
-}
-
-// ===== DELETE DOCUMENT =====
-async function deleteDocument(id) {
-  const doc = getNoteById(id);
-  if (!doc) return;
-  if (!confirm(`Delete "${doc.name}"?\n\nThis cannot be undone.`)) return;
-  try {
-    const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${doc.path}`, {
-      method: 'DELETE',
-      body: JSON.stringify({ message: `Delete: ${doc.name}`, sha: doc.sha })
-    });
-    if (!res.ok) { const e = await res.json(); throw new Error(e.message || 'Delete failed'); }
-    allNotes = allNotes.filter(n => n.id !== id);
-    applyFilters();
-    showToast('Document deleted', 'success');
-  } catch (e) {
-    showToast(`Error: ${e.message}`, 'error');
-  }
-}
-
-// ===== OPEN DOCUMENT =====
-async function openDocument(id) {
-  const doc = getNoteById(id);
-  if (!doc) return;
-  showToast('Loading...', '');
-  try {
-    // Fetch via Contents API with auth (raw URL blocks auth headers cross-origin)
-    const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${doc.path}`);
-    if (!res.ok) throw new Error('Failed to load document');
-    const data = await res.json();
-    if (!data.content) throw new Error('No content returned');
-    const bytes = Uint8Array.from(atob(data.content.replace(/\n/g, '')), c => c.charCodeAt(0));
-    const mime  = doc.docType === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-    const blob  = new Blob([bytes], { type: mime });
-    const url   = URL.createObjectURL(blob);
-    if (doc.docType === 'pdf') {
-      window.open(url, '_blank');
-    } else {
-      const a = document.createElement('a');
-      a.href = url; a.download = doc.name;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    }
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
-  } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
-}
-
-// ===== UPLOAD DOCUMENT =====
-async function uploadDocument(e) {
-  e.preventDefault();
-  const fileInput = document.getElementById('upload-file-input');
-  const catId = document.getElementById('upload-category').value;
-  const file = fileInput.files[0];
-
-  if (!file) { showToast('Please select a file', 'error'); return; }
-  const ext = file.name.split('.').pop().toLowerCase();
-  if (!['pdf', 'docx'].includes(ext)) {
-    showToast('Only PDF and DOCX files are supported', 'error'); return;
-  }
-  if (file.size > 10 * 1024 * 1024) {
-    showToast('File too large (max 10 MB)', 'error'); return;
-  }
-
-  const btn = document.getElementById('upload-btn');
-  btn.disabled = true; btn.textContent = 'Uploading...';
-
-  try {
-    const arrayBuffer = await file.arrayBuffer();
-    const uint8 = new Uint8Array(arrayBuffer);
-    // Chunk to avoid call stack overflow on large files
-    let binary = '';
-    const chunk = 8192;
-    for (let i = 0; i < uint8.length; i += chunk) {
-      binary += String.fromCharCode.apply(null, uint8.subarray(i, i + chunk));
-    }
-    const encoded = btoa(binary);
-
-    const date = new Date().toISOString().split('T')[0];
-    const slug = file.name.replace(/\.[^.]+$/, '')
-      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
-    const path = `${catId}/${date}-${slug}.${ext}`;
-
-    const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${path}`, {
-      method: 'PUT',
-      body: JSON.stringify({ message: `Upload: ${file.name}`, content: encoded })
-    });
-    if (!res.ok) { const err = await res.json(); throw new Error(err.message || 'Upload failed'); }
-
-    closeModal('upload-modal');
-    document.getElementById('upload-form').reset();
-    document.getElementById('selected-file-name').classList.add('hidden');
-    showToast('Document uploaded! ✓', 'success');
-    await loadAllNotes();
-  } catch (err) {
-    showToast(`Error: ${err.message}`, 'error');
-  } finally {
-    btn.disabled = false; btn.textContent = 'Upload Document';
-  }
-}
-
-function updateFileLabel(input) {
-  const hint = document.getElementById('selected-file-name');
-  if (input.files && input.files[0]) {
-    hint.textContent = `Selected: ${input.files[0].name} (${formatFileSize(input.files[0].size)})`;
-    hint.classList.remove('hidden');
-  }
-}
-
-// ===== TAGS =====
-async function addTagToNote() {
-  const input = document.getElementById('tag-input');
+// ===== TAGS (panel) =====
+async function addTagFromPanel() {
+  const input = document.getElementById('panel-tag-input');
   let tag = input.value.trim().toLowerCase();
   if (!tag) return;
   tag = tag.startsWith('#') ? tag : '#' + tag;
   tag = '#' + tag.slice(1).replace(/[^a-z0-9_-]/g, '');
   if (!tag || tag === '#') return;
 
-  const note = getNoteById(currentNoteId);
+  const note = getNoteById(panelNoteId);
   if (!note) return;
   if (note.tags.includes(tag)) { showToast('Tag already added', ''); input.value = ''; return; }
 
@@ -547,8 +404,8 @@ async function addTagToNote() {
   } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
 }
 
-async function removeTagFromNote(tag) {
-  const note = getNoteById(currentNoteId);
+async function removeTagFromPanel(tag) {
+  const note = getNoteById(panelNoteId);
   if (!note) return;
   const newTags = note.tags.filter(t => t !== tag);
   try {
@@ -557,14 +414,14 @@ async function removeTagFromNote(tag) {
   } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
 }
 
-// ===== ACTIONS =====
-async function addActionToNote() {
-  const textInput = document.getElementById('action-input');
-  const dueInput  = document.getElementById('action-due');
+// ===== ACTIONS (panel) =====
+async function addActionFromPanel() {
+  const textInput = document.getElementById('panel-action-input');
+  const dueInput  = document.getElementById('panel-action-due');
   const text = textInput.value.trim();
   if (!text) return;
 
-  const note = getNoteById(currentNoteId);
+  const note = getNoteById(panelNoteId);
   if (!note) return;
 
   const newActions = [...note.actions, { text, due: dueInput.value, done: false }];
@@ -575,8 +432,8 @@ async function addActionToNote() {
   } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
 }
 
-async function toggleAction(index) {
-  const note = getNoteById(currentNoteId);
+async function toggleActionFromPanel(index) {
+  const note = getNoteById(panelNoteId);
   if (!note) return;
   const newActions = note.actions.map((a, i) => i === index ? { ...a, done: !a.done } : a);
   try {
@@ -584,14 +441,173 @@ async function toggleAction(index) {
   } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
 }
 
-async function removeAction(index) {
-  const note = getNoteById(currentNoteId);
+async function removeActionFromPanel(index) {
+  const note = getNoteById(panelNoteId);
   if (!note) return;
   const newActions = note.actions.filter((_, i) => i !== index);
   try {
     await updateNoteRaw(note, updateActionsInRaw(note.raw, newActions), `Update action: ${note.title}`);
     showToast('Action removed', '');
   } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
+}
+
+// ===== EDIT IN PANEL =====
+function startPanelEdit() {
+  const note = getNoteById(panelNoteId);
+  if (!note) return;
+  document.getElementById('panel-edit-textarea').value = note.raw;
+  document.getElementById('panel-view-mode').classList.add('hidden');
+  document.getElementById('panel-edit-mode').classList.remove('hidden');
+  document.getElementById('panel-edit-btn').style.display = 'none';
+}
+
+function cancelPanelEdit() {
+  document.getElementById('panel-edit-mode').classList.add('hidden');
+  document.getElementById('panel-view-mode').classList.remove('hidden');
+  document.getElementById('panel-edit-btn').style.display = '';
+}
+
+async function savePanelEdit() {
+  const note = getNoteById(panelNoteId);
+  if (!note) return;
+  const newRaw = document.getElementById('panel-edit-textarea').value;
+  const btn = document.getElementById('panel-save-btn');
+  btn.disabled = true; btn.textContent = 'Saving...';
+  try {
+    await updateNoteRaw(note, newRaw, `Update: ${note.title}`);
+    cancelPanelEdit();
+    showToast('Saved!', 'success');
+  } catch (e) {
+    showToast(`Error: ${e.message}`, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Save Changes';
+  }
+}
+
+// ===== DELETE ENTRY =====
+async function deleteCurrentEntry() {
+  const note = getNoteById(panelNoteId);
+  if (!note) return;
+  if (!confirm(`Delete "${note.title}"?\n\nThis cannot be undone.`)) return;
+
+  try {
+    const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${note.path}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ message: `Delete: ${note.title}`, sha: note.sha })
+    });
+    if (!res.ok) { const e = await res.json(); throw new Error(e.message || 'Delete failed'); }
+
+    // Also delete attached doc file if present
+    if (note.docPath && note.docSha && !note.isLegacyDoc) {
+      await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${note.docPath}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ message: `Delete: ${note.docName}`, sha: note.docSha })
+      }).catch(() => {});
+    }
+
+    allNotes = allNotes.filter(n => n.id !== panelNoteId);
+    favourites.delete(note.path);
+    localStorage.setItem('vault_favourites', JSON.stringify([...favourites]));
+    closePanel();
+    applyFilters();
+    buildTagFilters();
+    showToast('Deleted', 'success');
+  } catch (e) {
+    showToast(`Error: ${e.message}`, 'error');
+  }
+}
+
+// ===== SAVE NEW ENTRY =====
+async function saveEntry(e) {
+  e.preventDefault();
+  const title    = document.getElementById('entry-title').value.trim();
+  const catId    = document.getElementById('entry-category').value;
+  const content  = document.getElementById('entry-content').value.trim();
+  const rawTags  = document.getElementById('entry-tags-input').value.trim();
+  const fileInput = document.getElementById('entry-file-input');
+  const file     = fileInput.files[0] || null;
+
+  if (!title) { showToast('Please enter a title', 'error'); return; }
+
+  if (file) {
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!['pdf', 'docx'].includes(ext)) { showToast('Only PDF and DOCX files are supported', 'error'); return; }
+    if (file.size > 10 * 1024 * 1024) { showToast('File too large (max 10 MB)', 'error'); return; }
+  }
+
+  const btn = document.getElementById('entry-save-btn');
+  btn.disabled = true; btn.textContent = 'Saving...';
+
+  try {
+    const date = new Date().toISOString().split('T')[0];
+    const slug = title.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-').slice(0, 60);
+
+    const tagList = rawTags
+      ? rawTags.split(/[\s,]+/).filter(Boolean).map(t => {
+          t = t.toLowerCase().replace(/[^#a-z0-9_-]/g, '');
+          return t.startsWith('#') ? t : '#' + t;
+        }).filter(t => t.length > 1)
+      : [];
+
+    const tagsLine = tagList.length ? `\n**Tags:** ${tagList.join(' ')}` : '';
+
+    let docLine = '';
+    let docFilename = '';
+    if (file) {
+      const ext = file.name.split('.').pop().toLowerCase();
+      docFilename = `${date}-${slug}.${ext}`;
+      docLine = `\n**Document:** ${docFilename}`;
+    }
+
+    const markdown = `# ${title}\n\n**Date:** ${date}${tagsLine}${docLine}\n\n${content}`.trim();
+    const encoded  = btoa(unescape(encodeURIComponent(markdown)));
+    const mdPath   = `${catId}/${date}-${slug}.md`;
+
+    const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${mdPath}`, {
+      method: 'PUT',
+      body: JSON.stringify({ message: `Add: ${title}`, content: encoded })
+    });
+    if (!res.ok) { const err = await res.json(); throw new Error(err.message || 'Save failed'); }
+
+    // Upload binary file if attached
+    if (file) {
+      const arrayBuffer = await file.arrayBuffer();
+      const uint8 = new Uint8Array(arrayBuffer);
+      let binary = '';
+      const chunk = 8192;
+      for (let i = 0; i < uint8.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, uint8.subarray(i, i + chunk));
+      }
+      const fileEncoded = btoa(binary);
+      const filePath = `${catId}/${docFilename}`;
+      const fileRes = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${filePath}`, {
+        method: 'PUT',
+        body: JSON.stringify({ message: `Upload: ${file.name}`, content: fileEncoded })
+      });
+      if (!fileRes.ok) {
+        const err = await fileRes.json();
+        throw new Error(`Note saved, but file upload failed: ${err.message}`);
+      }
+    }
+
+    closeModal('add-modal');
+    document.getElementById('add-form').reset();
+    document.getElementById('entry-file-label').classList.add('hidden');
+    showToast(file ? 'Entry saved with document! ✓' : 'Saved to vault! ✓', 'success');
+    await loadAllNotes();
+  } catch (err) {
+    showToast(`Error: ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Save to Vault';
+  }
+}
+
+function updateEntryFileLabel(input) {
+  const hint = document.getElementById('entry-file-label');
+  if (input.files && input.files[0]) {
+    hint.textContent = `Selected: ${input.files[0].name} (${formatFileSize(input.files[0].size)})`;
+    hint.classList.remove('hidden');
+  }
 }
 
 // ===== FILTERS & SEARCH =====
@@ -643,7 +659,6 @@ function applyFilters() {
       n.category.name.toLowerCase().includes(searchQuery)
     );
 
-  // Favourites float to top
   notes = [
     ...notes.filter(n => isFavourite(n.path)),
     ...notes.filter(n => !isFavourite(n.path))
@@ -687,27 +702,43 @@ function renderNotes() {
 
   const total    = allNotes.length;
   const showing  = filteredNotes.length;
-  const totalDocs  = allNotes.filter(n => n.isDocument).length;
-  const totalNotes = total - totalDocs;
-  const hasFilter  = searchQuery || activeCategory !== 'all' || activeTag;
-
+  const hasFilter = searchQuery || activeCategory !== 'all' || activeTag;
   stats.textContent = hasFilter
     ? `Showing ${showing} of ${total} items`
-    : `${totalNotes} note${totalNotes !== 1 ? 's' : ''}${totalDocs > 0 ? ` · ${totalDocs} doc${totalDocs !== 1 ? 's' : ''}` : ''} in your vault`;
+    : `${total} entr${total !== 1 ? 'ies' : 'y'} in your vault`;
 
   grid.innerHTML = filteredNotes.map(note => noteCardHTML(note)).join('');
 }
 
 function noteCardHTML(note) {
-  if (note.isDocument) return docCardHTML(note);
-
   const title   = highlight(escapeHtml(note.title), searchQuery);
-  const preview = highlight(escapeHtml(note.preview), searchQuery);
   const date    = formatDate(note.date);
   const fav     = isFavourite(note.path);
-  const pendingActions = note.actions.filter(a => !a.done).length;
+  const hasDoc  = !!(note.docName);
+  const pendingActions = (note.actions || []).filter(a => !a.done).length;
 
-  const tagsHtml = note.tags.length
+  let previewHtml = '';
+  if (note.isLegacyDoc) {
+    // Legacy doc card — show doc type badge prominently
+    const icon = note.docType === 'pdf' ? '📕' : '📄';
+    previewHtml = `<div class="card-doc-indicator legacy">
+      <span class="doc-icon-sm">${icon}</span>
+      <span class="doc-type-badge doc-type-${note.docType}">${note.docType.toUpperCase()}</span>
+      ${note.docSize ? `<span class="doc-size">${formatFileSize(note.docSize)}</span>` : ''}
+    </div>`;
+  } else {
+    const preview = highlight(escapeHtml(note.preview), searchQuery);
+    if (preview) previewHtml = `<div class="card-preview">${preview}</div>`;
+  }
+
+  const docBadge = hasDoc && !note.isLegacyDoc
+    ? `<div class="card-doc-indicator">
+        <span class="doc-icon-sm">${note.docType === 'pdf' ? '📕' : '📄'}</span>
+        <span class="doc-type-badge doc-type-${note.docType}">${note.docType.toUpperCase()}</span>
+      </div>`
+    : '';
+
+  const tagsHtml = (note.tags || []).length
     ? `<div class="card-tags">${note.tags.map(t => `<span class="card-tag-chip">${escapeHtml(t)}</span>`).join('')}</div>`
     : '';
 
@@ -715,63 +746,56 @@ function noteCardHTML(note) {
     ? `<span class="card-actions-badge">☐ ${pendingActions} action${pendingActions > 1 ? 's' : ''}</span>`
     : '';
 
+  const footerRight = note.isLegacyDoc
+    ? `<span class="read-more">${note.docType === 'pdf' ? 'Preview →' : 'View →'}</span>`
+    : `<span class="read-more">Read more →</span>`;
+
   return `
-    <div class="note-card${fav ? ' is-favourite' : ''}" onclick="viewNote('${escapeHtml(note.id)}')">
+    <div class="note-card${fav ? ' is-favourite' : ''}${note.isLegacyDoc ? ' legacy-doc-card' : ''}" onclick="openPanel('${escapeHtml(note.id)}')">
       <div class="card-top">
         <div class="card-top-left">
           <span class="cat-badge">${note.category.emoji} ${escapeHtml(note.category.name)}</span>
           ${date ? `<span class="card-date">${date}</span>` : ''}
         </div>
-        <button class="card-star-btn${fav ? ' starred' : ''}"
-          onclick="event.stopPropagation(); cardToggleFav('${escapeHtml(note.id)}')"
-          title="${fav ? 'Remove from favourites' : 'Add to favourites'}">
-          ${fav ? '★' : '☆'}
-        </button>
+        ${note.isLegacyDoc
+          ? `<button class="card-star-btn" onclick="event.stopPropagation(); deleteEntryById('${escapeHtml(note.id)}')" title="Delete">
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+             </button>`
+          : `<button class="card-star-btn${fav ? ' starred' : ''}"
+              onclick="event.stopPropagation(); cardToggleFav('${escapeHtml(note.id)}')"
+              title="${fav ? 'Remove from favourites' : 'Add to favourites'}">
+              ${fav ? '★' : '☆'}
+            </button>`
+        }
       </div>
       <div class="card-title">${title}</div>
-      ${preview ? `<div class="card-preview">${preview}</div>` : ''}
+      ${previewHtml}
+      ${docBadge}
       ${tagsHtml}
       <div class="card-footer">
         ${actionsHint}
-        <span class="read-more">Read more →</span>
+        ${footerRight}
       </div>
     </div>`;
 }
 
-function docCardHTML(doc) {
-  const isPdf  = doc.docType === 'pdf';
-  const icon   = isPdf ? '📕' : '📄';
-  const size   = formatFileSize(doc.size);
-  const date   = formatDate(doc.date);
-  const title  = highlight(escapeHtml(doc.title), searchQuery);
-
-  return `
-    <div class="note-card doc-card" onclick="openDocument('${escapeHtml(doc.id)}')">
-      <div class="card-top">
-        <div class="card-top-left">
-          <span class="cat-badge">${doc.category.emoji} ${escapeHtml(doc.category.name)}</span>
-          ${date ? `<span class="card-date">${date}</span>` : ''}
-        </div>
-        <button class="card-delete-doc-btn"
-          onclick="event.stopPropagation(); deleteDocument('${escapeHtml(doc.id)}')"
-          title="Delete document">
-          <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-        </button>
-      </div>
-      <div class="doc-card-body">
-        <div class="doc-icon-large">${icon}</div>
-        <div class="doc-info">
-          <div class="card-title">${title}</div>
-          <div class="doc-meta">
-            <span class="doc-type-badge doc-type-${doc.docType}">${doc.docType.toUpperCase()}</span>
-            ${size ? `<span class="doc-size">${size}</span>` : ''}
-          </div>
-        </div>
-      </div>
-      <div class="card-footer">
-        <span class="read-more">${isPdf ? 'Preview →' : 'Download →'}</span>
-      </div>
-    </div>`;
+async function deleteEntryById(id) {
+  const note = getNoteById(id);
+  if (!note) return;
+  if (!confirm(`Delete "${note.title}"?\n\nThis cannot be undone.`)) return;
+  try {
+    const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${note.path}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ message: `Delete: ${note.title}`, sha: note.sha })
+    });
+    if (!res.ok) { const e = await res.json(); throw new Error(e.message || 'Delete failed'); }
+    allNotes = allNotes.filter(n => n.id !== id);
+    applyFilters();
+    buildTagFilters();
+    showToast('Deleted', 'success');
+  } catch (e) {
+    showToast(`Error: ${e.message}`, 'error');
+  }
 }
 
 function cardToggleFav(id) {
@@ -807,36 +831,138 @@ function buildTagFilters() {
     }).join('');
 }
 
-// ===== VIEW NOTE =====
-function viewNote(id) {
+// ===== ENTRY PANEL =====
+function openPanel(id) {
   const note = getNoteById(id);
   if (!note) return;
-  currentNoteId = id;
+  panelNoteId = id;
 
-  document.getElementById('edit-mode').classList.add('hidden');
-  document.getElementById('view-mode').classList.remove('hidden');
-  document.getElementById('edit-btn').style.display = '';
+  // Revoke old blob URL
+  if (panelDocBlobUrl) { URL.revokeObjectURL(panelDocBlobUrl); panelDocBlobUrl = null; }
 
-  refreshViewModal(note);
-  openModal('view-modal');
+  // Reset edit mode
+  document.getElementById('panel-edit-mode').classList.add('hidden');
+  document.getElementById('panel-view-mode').classList.remove('hidden');
+  document.getElementById('panel-edit-btn').style.display = '';
+
+  renderPanel(note);
+
+  document.getElementById('entry-panel').classList.remove('hidden');
+  document.getElementById('panel-overlay').classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
 }
 
-function refreshViewModal(note) {
-  document.getElementById('view-badge').innerHTML =
-    `${note.category.emoji} ${escapeHtml(note.category.name)}`;
-  document.getElementById('view-date').textContent = formatDate(note.date);
-  document.getElementById('view-content').innerHTML = marked.parse(note.raw
+function closePanel() {
+  document.getElementById('entry-panel').classList.add('hidden');
+  document.getElementById('panel-overlay').classList.add('hidden');
+  document.body.style.overflow = '';
+  panelNoteId = null;
+  if (panelDocBlobUrl) { URL.revokeObjectURL(panelDocBlobUrl); panelDocBlobUrl = null; }
+}
+
+function renderPanel(note) {
+  document.getElementById('panel-badge').innerHTML = `${note.category.emoji} ${escapeHtml(note.category.name)}`;
+  document.getElementById('panel-date').textContent = formatDate(note.date);
+  document.getElementById('panel-title').textContent = note.title;
+  updatePanelFavState(note.path);
+
+  // Edit button hidden for legacy doc cards (no .md to edit)
+  document.getElementById('panel-edit-btn').style.display = note.isLegacyDoc ? 'none' : '';
+
+  const noteSection = document.getElementById('panel-note-section');
+  const docSection  = document.getElementById('panel-doc-section');
+
+  if (note.isLegacyDoc) {
+    noteSection.classList.add('hidden');
+    docSection.classList.remove('hidden');
+    setupDocSection(note);
+    loadDocInPanel(note);
+  } else {
+    noteSection.classList.remove('hidden');
+
+    // Render note content (strip metadata lines for display)
+    const displayRaw = note.raw
+      .replace(/^\*\*Tags:\*\*.*$/m, '')
+      .replace(/^\*\*Document:\*\*.*$/m, '')
+      .replace(/^## ✅ Follow-up Actions[\s\S]*/m, '');
+    document.getElementById('panel-note-content').innerHTML = marked.parse(displayRaw);
+
+    renderPanelTags(note.tags);
+    renderPanelActions(note.actions);
+
+    if (note.docName) {
+      docSection.classList.remove('hidden');
+      setupDocSection(note);
+      loadDocInPanel(note);
+    } else {
+      docSection.classList.add('hidden');
+    }
+  }
+}
+
+function setupDocSection(note) {
+  const docType = note.docType || '';
+  const icon    = docType === 'pdf' ? '📕' : '📄';
+  document.getElementById('panel-doc-icon').textContent = icon;
+  document.getElementById('panel-doc-name').textContent = note.docName || note.name || '';
+  const badge = document.getElementById('panel-doc-type-badge');
+  badge.textContent  = docType.toUpperCase();
+  badge.className    = `doc-type-badge doc-type-${docType}`;
+  document.getElementById('panel-doc-size').textContent = note.docSize ? formatFileSize(note.docSize) : '';
+  // Reset viewer
+  document.getElementById('panel-doc-viewer').innerHTML =
+    `<div class="doc-loading"><div class="spinner"></div><span>Loading document...</span></div>`;
+}
+
+async function loadDocInPanel(note) {
+  const viewer = document.getElementById('panel-doc-viewer');
+  const path   = note.isLegacyDoc ? note.path : note.docPath;
+  const docType = note.docType;
+
+  try {
+    const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${path}`);
+    if (!res.ok) throw new Error('Failed to load document');
+    const data = await res.json();
+    if (!data.content) throw new Error('No content returned');
+
+    const bytes = Uint8Array.from(atob(data.content.replace(/\n/g, '')), c => c.charCodeAt(0));
+
+    if (docType === 'pdf') {
+      const blob = new Blob([bytes], { type: 'application/pdf' });
+      panelDocBlobUrl = URL.createObjectURL(blob);
+      viewer.innerHTML = `<iframe src="${panelDocBlobUrl}" class="pdf-iframe" title="${escapeHtml(note.docName || note.name)}"></iframe>`;
+    } else if (docType === 'docx') {
+      const arrayBuffer = bytes.buffer;
+      if (typeof mammoth === 'undefined') {
+        throw new Error('mammoth.js not loaded — check your internet connection');
+      }
+      const result = await mammoth.convertToHtml({ arrayBuffer });
+      viewer.innerHTML = `<div class="docx-content">${result.value}</div>`;
+    } else {
+      viewer.innerHTML = `<div class="doc-error">Unsupported file type: ${escapeHtml(docType)}</div>`;
+    }
+  } catch (e) {
+    viewer.innerHTML = `<div class="doc-error">
+      <p>Could not load document: ${escapeHtml(e.message)}</p>
+      <p class="doc-error-hint">Files larger than ~1 MB may not be previewable via GitHub API.</p>
+    </div>`;
+  }
+}
+
+function refreshPanel(note) {
+  // Called after updateNoteRaw — re-render the panel in place
+  const displayRaw = note.raw
     .replace(/^\*\*Tags:\*\*.*$/m, '')
-    .replace(/^## ✅ Follow-up Actions[\s\S]*/m, '')
-  );
-
-  updateFavBtnState(note.path);
-  renderViewTags(note.tags);
-  renderViewActions(note.actions);
+    .replace(/^\*\*Document:\*\*.*$/m, '')
+    .replace(/^## ✅ Follow-up Actions[\s\S]*/m, '');
+  document.getElementById('panel-title').textContent = note.title;
+  document.getElementById('panel-note-content').innerHTML = marked.parse(displayRaw);
+  renderPanelTags(note.tags);
+  renderPanelActions(note.actions);
 }
 
-function renderViewTags(tags) {
-  const container = document.getElementById('view-tags');
+function renderPanelTags(tags) {
+  const container = document.getElementById('panel-tags');
   if (tags.length === 0) {
     container.innerHTML = `<span class="no-items-hint">No tags yet — add one below</span>`;
     return;
@@ -844,12 +970,12 @@ function renderViewTags(tags) {
   container.innerHTML = tags.map(tag => `
     <span class="tag-chip">
       ${escapeHtml(tag)}
-      <button class="tag-chip-remove" onclick="removeTagFromNote('${escapeHtml(tag)}')" title="Remove tag">×</button>
+      <button class="tag-chip-remove" onclick="removeTagFromPanel('${escapeHtml(tag)}')" title="Remove tag">×</button>
     </span>`).join('');
 }
 
-function renderViewActions(actions) {
-  const list = document.getElementById('view-actions');
+function renderPanelActions(actions) {
+  const list = document.getElementById('panel-actions');
   if (actions.length === 0) {
     list.innerHTML = `<li><span class="no-items-hint">No actions yet — add one below</span></li>`;
     return;
@@ -859,62 +985,16 @@ function renderViewActions(actions) {
     const isOverdue = a.due && a.due < today && !a.done;
     return `
       <li class="action-item${a.done ? ' done' : ''}">
-        <div class="action-checkbox${a.done ? ' checked' : ''}" onclick="toggleAction(${i})" title="${a.done ? 'Mark incomplete' : 'Mark complete'}">
+        <div class="action-checkbox${a.done ? ' checked' : ''}" onclick="toggleActionFromPanel(${i})" title="${a.done ? 'Mark incomplete' : 'Mark complete'}">
           ${a.done ? '✓' : ''}
         </div>
         <div class="action-body">
           <div class="action-text">${escapeHtml(a.text)}</div>
           ${a.due ? `<div class="action-due${isOverdue ? ' overdue' : ''}">📅 ${formatDate(a.due)}${isOverdue ? ' · Overdue' : ''}</div>` : ''}
         </div>
-        <button class="action-delete-btn" onclick="removeAction(${i})" title="Delete action">×</button>
+        <button class="action-delete-btn" onclick="removeActionFromPanel(${i})" title="Delete action">×</button>
       </li>`;
   }).join('');
-}
-
-// ===== SAVE NEW NOTE =====
-async function saveNote(e) {
-  e.preventDefault();
-  const title   = document.getElementById('note-title').value.trim();
-  const catId   = document.getElementById('note-category').value;
-  const content = document.getElementById('note-content').value.trim();
-  const rawTags = document.getElementById('note-tags-input').value.trim();
-
-  if (!title) { showToast('Please enter a title', 'error'); return; }
-
-  const saveBtn = document.getElementById('save-btn');
-  saveBtn.disabled = true; saveBtn.textContent = 'Saving...';
-
-  try {
-    const date  = new Date().toISOString().split('T')[0];
-    const slug  = title.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-').slice(0, 60);
-    const path  = `${catId}/${date}-${slug}.md`;
-
-    const tagList = rawTags
-      ? rawTags.split(/[\s,]+/).filter(Boolean).map(t => {
-          t = t.toLowerCase().replace(/[^#a-z0-9_-]/g, '');
-          return t.startsWith('#') ? t : '#' + t;
-        }).filter(t => t.length > 1)
-      : [];
-
-    const tagsLine   = tagList.length ? `\n**Tags:** ${tagList.join(' ')}` : '';
-    const markdown   = `# ${title}\n\n**Date:** ${date}${tagsLine}\n\n${content}`.trim();
-    const encoded    = btoa(unescape(encodeURIComponent(markdown)));
-
-    const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${path}`, {
-      method: 'PUT',
-      body: JSON.stringify({ message: `Add: ${title}`, content: encoded })
-    });
-    if (!res.ok) { const err = await res.json(); throw new Error(err.message || 'Save failed'); }
-
-    closeModal('add-modal');
-    document.getElementById('add-form').reset();
-    showToast('Saved to vault! ✓', 'success');
-    await loadAllNotes();
-  } catch (err) {
-    showToast(`Error: ${err.message}`, 'error');
-  } finally {
-    saveBtn.disabled = false; saveBtn.textContent = 'Save to Vault';
-  }
 }
 
 // ===== BUILD UI =====
@@ -930,8 +1010,7 @@ function buildCategorySelect() {
   const opts = CONFIG.categories.map(cat =>
     `<option value="${cat.id}">${cat.emoji} ${cat.name}</option>`
   ).join('');
-  document.getElementById('note-category').innerHTML = opts;
-  document.getElementById('upload-category').innerHTML = opts;
+  document.getElementById('entry-category').innerHTML = opts;
 }
 
 // ===== MODALS =====
@@ -944,7 +1023,6 @@ function openModal(id) {
 function closeModal(id) {
   document.getElementById(id).classList.add('hidden');
   document.body.style.overflow = '';
-  if (id === 'view-modal') currentNoteId = null;
 }
 
 function modalBackdropClick(e, id) {
@@ -952,7 +1030,10 @@ function modalBackdropClick(e, id) {
 }
 
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') ['add-modal', 'view-modal', 'settings-modal', 'upload-modal'].forEach(closeModal);
+  if (e.key === 'Escape') {
+    closePanel();
+    ['add-modal', 'settings-modal'].forEach(closeModal);
+  }
 });
 
 // ===== TOAST =====

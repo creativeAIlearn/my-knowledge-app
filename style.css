@@ -806,6 +806,26 @@ a:hover { text-decoration: underline; }
 .doc-error p { margin-bottom: 8px; }
 .doc-error-hint { font-size: 12px; color: var(--text-muted); }
 
+/* ===== Doc viewer label row (name + download btn) ===== */
+.doc-viewer-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ===== Download button ===== */
+.doc-download-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  text-decoration: none !important;
+  font-size: 13px;
+}
+.doc-download-btn:hover { background: var(--primary-dark); color: white; text-decoration: none; }
+
 /* ===== Doc type badges ===== */
 .doc-type-badge {
   display: inline-block;
@@ -815,9 +835,65 @@ a:hover { text-decoration: underline; }
   font-weight: 700;
   letter-spacing: 0.5px;
 }
-.doc-type-pdf  { background: #fee2e2; color: #dc2626; }
-.doc-type-docx { background: #dbeafe; color: #1d4ed8; }
+.doc-type-pdf     { background: #fee2e2; color: #dc2626; }
+.doc-type-docx    { background: #dbeafe; color: #1d4ed8; }
+.doc-type-img     { background: #d1fae5; color: #065f46; }
+.doc-type-video   { background: #ede9fe; color: #5b21b6; }
+.doc-type-audio   { background: #fce7f3; color: #9d174d; }
+.doc-type-txt     { background: #f3f4f6; color: #374151; }
+.doc-type-csv     { background: #ecfdf5; color: #047857; }
+.doc-type-generic { background: #f3f4f6; color: #374151; }
 .doc-size { font-size: 12px; color: var(--text-muted); }
+
+/* ===== Media viewers ===== */
+.media-viewer {
+  padding: 16px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: #000;
+  border-radius: var(--radius-sm);
+  min-height: 80px;
+}
+.preview-img {
+  max-width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+  border-radius: 4px;
+  display: block;
+}
+.preview-video {
+  max-width: 100%;
+  max-height: 60vh;
+  display: block;
+  border-radius: 4px;
+}
+.audio-viewer {
+  background: var(--bg);
+  padding: 24px 20px;
+}
+.preview-audio {
+  width: 100%;
+  display: block;
+}
+
+/* ===== Text / CSV viewer ===== */
+.text-content {
+  max-height: 60vh;
+  overflow: auto;
+  padding: 16px;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+}
+.text-pre {
+  font-family: 'Menlo', 'Monaco', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
 
 /* ===== File Drop Area ===== */
 .file-drop-area {
@@ -888,6 +964,11 @@ mark { background: #fef08a; color: inherit; border-radius: 2px; padding: 0 1px; 
 
   .pdf-iframe { height: 50vh; }
   .docx-content { max-height: 45vh; }
+  .preview-img { max-height: 50vh; }
+  .preview-video { max-height: 40vh; }
+  .text-content { max-height: 45vh; }
+  .doc-viewer-label-row { flex-direction: column; align-items: flex-start; }
+  .doc-download-btn { width: 100%; justify-content: center; }
 
   .panel-toolbar { gap: 2px; }
   .tool-btn { width: 30px; height: 30px; }

@@ -1,3 +1,35 @@
+// ===== FILE TYPE CONFIG =====
+const FILE_TYPES = {
+  pdf:  { icon: '📕', color: 'pdf',   label: 'PDF',   category: 'doc' },
+  docx: { icon: '📄', color: 'docx',  label: 'DOCX',  category: 'doc' },
+  txt:  { icon: '📝', color: 'txt',   label: 'TXT',   category: 'text' },
+  csv:  { icon: '📊', color: 'csv',   label: 'CSV',   category: 'text' },
+  jpg:  { icon: '🖼️', color: 'img',   label: 'JPG',   category: 'image' },
+  jpeg: { icon: '🖼️', color: 'img',   label: 'JPEG',  category: 'image' },
+  png:  { icon: '🖼️', color: 'img',   label: 'PNG',   category: 'image' },
+  gif:  { icon: '🖼️', color: 'img',   label: 'GIF',   category: 'image' },
+  webp: { icon: '🖼️', color: 'img',   label: 'WEBP',  category: 'image' },
+  mp4:  { icon: '🎬', color: 'video', label: 'MP4',   category: 'video' },
+  mpeg: { icon: '🎬', color: 'video', label: 'MPEG',  category: 'video' },
+  mov:  { icon: '🎬', color: 'video', label: 'MOV',   category: 'video' },
+  mp3:  { icon: '🎵', color: 'audio', label: 'MP3',   category: 'audio' },
+  wav:  { icon: '🎵', color: 'audio', label: 'WAV',   category: 'audio' },
+  m4a:  { icon: '🎵', color: 'audio', label: 'M4A',   category: 'audio' },
+};
+const MIME_TYPES = {
+  pdf: 'application/pdf',
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp',
+  mp4: 'video/mp4', mpeg: 'video/mpeg', mov: 'video/quicktime',
+  mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4',
+  csv: 'text/csv', txt: 'text/plain',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+const ATTACH_EXTS = new Set(['pdf','docx','jpg','jpeg','png','gif','webp','mp4','mpeg','mov','mp3','wav','m4a','csv','txt']);
+
+function getFileType(ext) {
+  return FILE_TYPES[(ext || '').toLowerCase()] || { icon: '📎', color: 'generic', label: (ext || '').toUpperCase(), category: 'other' };
+}
+
 // ===== CONFIG =====
 const CONFIG = {
   owner: 'creativeAIlearn',
@@ -155,7 +187,11 @@ async function fetchCategoryFiles(cat) {
   if (!Array.isArray(files)) return [];
 
   const mdFiles  = files.filter(f => (f.name.endsWith('.md') || f.name.endsWith('.txt')) && f.name !== '.gitkeep');
-  const docFiles = files.filter(f => f.name.endsWith('.pdf') || f.name.endsWith('.docx'));
+  const mdFileNames = new Set(mdFiles.map(f => f.name));
+  const docFiles = files.filter(f => {
+    const ext = f.name.split('.').pop().toLowerCase();
+    return ATTACH_EXTS.has(ext) && !f.name.endsWith('.md');
+  });
 
   // Build a map of doc files by filename so notes can link to them
   const docMap = {};
@@ -166,7 +202,7 @@ async function fetchCategoryFiles(cat) {
 
   // Any doc files not linked to a .md become legacy standalone cards
   const linkedDocNames = new Set(notes.map(n => n.docName).filter(Boolean));
-  const legacyDocs = docFiles.filter(f => !linkedDocNames.has(f.name)).map(f => legacyDocCard(f, cat));
+  const legacyDocs = docFiles.filter(f => !linkedDocNames.has(f.name) && !mdFileNames.has(f.name)).map(f => legacyDocCard(f, cat));
 
   return [...notes, ...legacyDocs];
 }
@@ -224,6 +260,7 @@ function legacyDocCard(file, cat) {
     .replace(/^\d{4}-\d{2}-\d{2}-?/, '')
     .replace(/[-_]+/g, ' ')
     .replace(/\b\w/g, c => c.toUpperCase()) || file.name;
+  const ft = getFileType(ext);
   return {
     id: file.sha, sha: file.sha, name: file.name,
     path: file.path, category: cat,
@@ -232,6 +269,7 @@ function legacyDocCard(file, cat) {
     isLegacyDoc: true,
     docName: file.name, docPath: file.path, docSha: file.sha,
     docType: ext, docSize: file.size,
+    _ft: ft,
   };
 }
 
@@ -531,8 +569,8 @@ async function saveEntry(e) {
 
   if (file) {
     const ext = file.name.split('.').pop().toLowerCase();
-    if (!['pdf', 'docx'].includes(ext)) { showToast('Only PDF and DOCX files are supported', 'error'); return; }
-    if (file.size > 10 * 1024 * 1024) { showToast('File too large (max 10 MB)', 'error'); return; }
+    if (!ATTACH_EXTS.has(ext)) { showToast(`Unsupported file type: .${ext}`, 'error'); return; }
+    if (file.size > 25 * 1024 * 1024) { showToast('File too large (max 25 MB)', 'error'); return; }
   }
 
   const btn = document.getElementById('entry-save-btn');
@@ -593,7 +631,7 @@ async function saveEntry(e) {
     closeModal('add-modal');
     document.getElementById('add-form').reset();
     document.getElementById('entry-file-label').classList.add('hidden');
-    showToast(file ? 'Entry saved with document! ✓' : 'Saved to vault! ✓', 'success');
+    showToast(file ? 'Entry saved with attachment! ✓' : 'Saved to vault! ✓', 'success');
     await loadAllNotes();
   } catch (err) {
     showToast(`Error: ${err.message}`, 'error');
@@ -720,10 +758,10 @@ function noteCardHTML(note) {
   let previewHtml = '';
   if (note.isLegacyDoc) {
     // Legacy doc card — show doc type badge prominently
-    const icon = note.docType === 'pdf' ? '📕' : '📄';
+    const ft = getFileType(note.docType);
     previewHtml = `<div class="card-doc-indicator legacy">
-      <span class="doc-icon-sm">${icon}</span>
-      <span class="doc-type-badge doc-type-${note.docType}">${note.docType.toUpperCase()}</span>
+      <span class="doc-icon-sm">${ft.icon}</span>
+      <span class="doc-type-badge doc-type-${ft.color}">${ft.label}</span>
       ${note.docSize ? `<span class="doc-size">${formatFileSize(note.docSize)}</span>` : ''}
     </div>`;
   } else {
@@ -732,10 +770,10 @@ function noteCardHTML(note) {
   }
 
   const docBadge = hasDoc && !note.isLegacyDoc
-    ? `<div class="card-doc-indicator">
-        <span class="doc-icon-sm">${note.docType === 'pdf' ? '📕' : '📄'}</span>
-        <span class="doc-type-badge doc-type-${note.docType}">${note.docType.toUpperCase()}</span>
-      </div>`
+    ? (() => { const ft = getFileType(note.docType); return `<div class="card-doc-indicator">
+        <span class="doc-icon-sm">${ft.icon}</span>
+        <span class="doc-type-badge doc-type-${ft.color}">${ft.label}</span>
+      </div>`; })()
     : '';
 
   const tagsHtml = (note.tags || []).length
@@ -901,50 +939,80 @@ function renderPanel(note) {
 }
 
 function setupDocSection(note) {
-  const docType = note.docType || '';
-  const icon    = docType === 'pdf' ? '📕' : '📄';
-  document.getElementById('panel-doc-icon').textContent = icon;
+  const ft = getFileType(note.docType || '');
+  document.getElementById('panel-doc-icon').textContent = ft.icon;
   document.getElementById('panel-doc-name').textContent = note.docName || note.name || '';
   const badge = document.getElementById('panel-doc-type-badge');
-  badge.textContent  = docType.toUpperCase();
-  badge.className    = `doc-type-badge doc-type-${docType}`;
+  badge.textContent = ft.label;
+  badge.className   = `doc-type-badge doc-type-${ft.color}`;
   document.getElementById('panel-doc-size').textContent = note.docSize ? formatFileSize(note.docSize) : '';
+  // Reset download button
+  const dlBtn = document.getElementById('panel-doc-download');
+  if (dlBtn) { dlBtn.classList.add('hidden'); dlBtn.removeAttribute('href'); dlBtn.removeAttribute('download'); }
   // Reset viewer
   document.getElementById('panel-doc-viewer').innerHTML =
-    `<div class="doc-loading"><div class="spinner"></div><span>Loading document...</span></div>`;
+    `<div class="doc-loading"><div class="spinner"></div><span>Loading...</span></div>`;
 }
 
 async function loadDocInPanel(note) {
-  const viewer = document.getElementById('panel-doc-viewer');
-  const path   = note.isLegacyDoc ? note.path : note.docPath;
+  const viewer  = document.getElementById('panel-doc-viewer');
+  const path    = note.isLegacyDoc ? note.path : note.docPath;
   const docType = note.docType;
+  const fname   = note.docName || note.name || 'file';
 
   try {
     const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${path}`);
-    if (!res.ok) throw new Error('Failed to load document');
+    if (!res.ok) throw new Error('Failed to load file');
     const data = await res.json();
-    if (!data.content) throw new Error('No content returned');
 
-    const bytes = Uint8Array.from(atob(data.content.replace(/\n/g, '')), c => c.charCodeAt(0));
-
-    if (docType === 'pdf') {
-      const blob = new Blob([bytes], { type: 'application/pdf' });
-      panelDocBlobUrl = URL.createObjectURL(blob);
-      viewer.innerHTML = `<iframe src="${panelDocBlobUrl}" class="pdf-iframe" title="${escapeHtml(note.docName || note.name)}"></iframe>`;
-    } else if (docType === 'docx') {
-      const arrayBuffer = bytes.buffer;
-      if (typeof mammoth === 'undefined') {
-        throw new Error('mammoth.js not loaded — check your internet connection');
-      }
-      const result = await mammoth.convertToHtml({ arrayBuffer });
-      viewer.innerHTML = `<div class="docx-content">${result.value}</div>`;
+    let bytes;
+    if (data.content) {
+      bytes = Uint8Array.from(atob(data.content.replace(/\n/g, '')), c => c.charCodeAt(0));
+    } else if (data.download_url) {
+      // File > 1 MB — fetch via download_url (includes auth token for private repos)
+      const dlRes = await fetch(data.download_url, { headers: { Authorization: `token ${token}` } });
+      if (!dlRes.ok) throw new Error('Failed to download file');
+      bytes = new Uint8Array(await dlRes.arrayBuffer());
     } else {
-      viewer.innerHTML = `<div class="doc-error">Unsupported file type: ${escapeHtml(docType)}</div>`;
+      throw new Error('File content unavailable');
+    }
+
+    const mime = MIME_TYPES[docType] || 'application/octet-stream';
+    const blob = new Blob([bytes], { type: mime });
+    panelDocBlobUrl = URL.createObjectURL(blob);
+
+    // Enable download button
+    const dlBtn = document.getElementById('panel-doc-download');
+    if (dlBtn) {
+      dlBtn.href = panelDocBlobUrl;
+      dlBtn.download = fname;
+      dlBtn.classList.remove('hidden');
+    }
+
+    const ft = getFileType(docType);
+
+    if (ft.category === 'image') {
+      viewer.innerHTML = `<div class="media-viewer"><img src="${panelDocBlobUrl}" alt="${escapeHtml(fname)}" class="preview-img" /></div>`;
+    } else if (ft.category === 'video') {
+      viewer.innerHTML = `<div class="media-viewer"><video controls class="preview-video"><source src="${panelDocBlobUrl}" type="${mime}">Your browser does not support video playback.</video></div>`;
+    } else if (ft.category === 'audio') {
+      viewer.innerHTML = `<div class="media-viewer audio-viewer"><audio controls class="preview-audio"><source src="${panelDocBlobUrl}" type="${mime}">Your browser does not support audio playback.</audio></div>`;
+    } else if (docType === 'pdf') {
+      viewer.innerHTML = `<iframe src="${panelDocBlobUrl}" class="pdf-iframe" title="${escapeHtml(fname)}"></iframe>`;
+    } else if (docType === 'docx') {
+      if (typeof mammoth === 'undefined') throw new Error('mammoth.js not loaded — check your internet connection');
+      const result = await mammoth.convertToHtml({ arrayBuffer: bytes.buffer });
+      viewer.innerHTML = `<div class="docx-content">${result.value}</div>`;
+    } else if (ft.category === 'text') {
+      const text = new TextDecoder('utf-8').decode(bytes);
+      viewer.innerHTML = `<div class="text-content"><pre class="text-pre">${escapeHtml(text)}</pre></div>`;
+    } else {
+      viewer.innerHTML = `<div class="doc-error"><p>Preview not available for .${escapeHtml(docType)} files.</p></div>`;
     }
   } catch (e) {
     viewer.innerHTML = `<div class="doc-error">
-      <p>Could not load document: ${escapeHtml(e.message)}</p>
-      <p class="doc-error-hint">Files larger than ~1 MB may not be previewable via GitHub API.</p>
+      <p>Could not load file: ${escapeHtml(e.message)}</p>
+      <p class="doc-error-hint">Files larger than ~1 MB are fetched via download URL. Check your connection.</p>
     </div>`;
   }
 }

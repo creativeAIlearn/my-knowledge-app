@@ -34,18 +34,46 @@ function getFileType(ext) {
 const CONFIG = {
   owner: 'creativeAIlearn',
   repo: 'my-ideas-vault',
-  categories: [
-    { id: 'business-ideas',         name: 'Business Ideas',       emoji: '💡' },
-    { id: 'quotes-and-inspiration', name: 'Quotes & Inspiration', emoji: '✨' },
-    { id: 'books',                  name: 'Books',                emoji: '📚' },
-    { id: 'articles',               name: 'Articles',             emoji: '📄' },
-    { id: 'podcasts-and-youtube',   name: 'Podcasts & YouTube',   emoji: '🎙️' },
-    { id: 'ott-and-movies',         name: 'OTT & Movies',         emoji: '🎬' },
-    { id: 'stocks-and-investments', name: 'Stocks & Investments', emoji: '📈' },
-    { id: 'gyaan',                  name: 'Gyaan',                emoji: '🧠' },
-    { id: 'ai-learnings',           name: 'AI Learnings',         emoji: '🤖' },
-  ]
 };
+
+// ===== DEFAULT CATEGORIES =====
+const DEFAULT_CATEGORIES = [
+  { id: 'business-ideas',         name: 'Business Ideas',       emoji: '💡' },
+  { id: 'quotes-and-inspiration', name: 'Quotes & Inspiration', emoji: '✨' },
+  { id: 'books',                  name: 'Books',                emoji: '📚' },
+  { id: 'articles',               name: 'Articles',             emoji: '📄' },
+  { id: 'podcasts-and-youtube',   name: 'Podcasts & YouTube',   emoji: '🎙️' },
+  { id: 'ott-and-movies',         name: 'OTT & Movies',         emoji: '🎬' },
+  { id: 'stocks-and-investments', name: 'Stocks & Investments', emoji: '📈' },
+  { id: 'gyaan',                  name: 'Gyaan',                emoji: '🧠' },
+  { id: 'ai-learnings',           name: 'AI Learnings',         emoji: '🤖' },
+];
+
+const EMOJI_OPTIONS = [
+  '💡','✨','📚','📄','🎙️','🎬','📈','🧠','🤖','🏆',
+  '💰','🌍','🎯','🔥','💎','🚀','⚡','🌱','🎨','🎵',
+  '✈️','🏠','💻','📱','🎮','📸','⭐','🛠️','📊','📝',
+  '🗂️','📌','💬','🔍','🌐','🏦','💼','🎓','🤝','🧩',
+  '🎁','🔐','🌿','🏋️','🌈','❤️','🔑','📡','🔬','📁',
+  '🗃️','🗄️','🎪','🎭','🎯','🔖','🧬','🏗️','🎺','🎸',
+];
+
+function loadCategories() {
+  try {
+    const stored = localStorage.getItem('vault_categories');
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch {}
+  return DEFAULT_CATEGORIES.map(c => ({ ...c }));
+}
+
+function saveCategories() {
+  try { localStorage.setItem('vault_categories', JSON.stringify(categories)); } catch {}
+}
+
+let categories = loadCategories();
 
 // ===== COOKIE HELPERS =====
 function setCookie(name, value, days) {
@@ -162,7 +190,7 @@ function disconnectVault() {
 async function loadAllNotes(showRefreshToast = false) {
   showLoadingState(); allNotes = []; vaultAuthError = false;
   try {
-    const results = await Promise.allSettled(CONFIG.categories.map(cat => fetchCategoryFiles(cat)));
+    const results = await Promise.allSettled(categories.map(cat => fetchCategoryFiles(cat)));
     results.forEach(r => { if (r.status === 'fulfilled') allNotes.push(...r.value); });
     allNotes.sort((a, b) => b.date !== a.date ? b.date.localeCompare(a.date) : b.name.localeCompare(a.name));
     applyFilters();
@@ -1067,16 +1095,17 @@ function renderPanelActions(actions) {
 
 // ===== BUILD UI =====
 function buildCategoryFilters() {
+  const prev = activeCategory;
   document.getElementById('category-filters').innerHTML =
-    `<button class="cat-btn active" onclick="filterCategory('all', this)">All</button>` +
-    CONFIG.categories.map(cat =>
-      `<button class="cat-btn" onclick="filterCategory('${cat.id}', this)">${cat.emoji} ${cat.name}</button>`
+    `<button class="cat-btn${prev === 'all' ? ' active' : ''}" onclick="filterCategory('all', this)">All</button>` +
+    categories.map(cat =>
+      `<button class="cat-btn${prev === cat.id ? ' active' : ''}" onclick="filterCategory('${escapeHtml(cat.id)}', this)">${cat.emoji} ${escapeHtml(cat.name)}</button>`
     ).join('');
 }
 
 function buildCategorySelect() {
-  const opts = CONFIG.categories.map(cat =>
-    `<option value="${cat.id}">${cat.emoji} ${cat.name}</option>`
+  const opts = categories.map(cat =>
+    `<option value="${escapeHtml(cat.id)}">${cat.emoji} ${escapeHtml(cat.name)}</option>`
   ).join('');
   document.getElementById('entry-category').innerHTML = opts;
 }
@@ -1127,4 +1156,376 @@ function highlight(text, query) {
   if (!query) return text;
   const esc = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return text.replace(new RegExp(`(${esc})`, 'gi'), '<mark>$1</mark>');
+}
+
+// ===== CATEGORY MANAGER =====
+
+let newCatEmoji = '📁';
+const pendingEditEmoji = {}; // { catId: emoji } during inline edit
+
+function openCategoryManager() {
+  renderCategoryManager();
+  openModal('cat-manager-modal');
+}
+
+function renderCategoryManager() {
+  const list = document.getElementById('cat-manager-list');
+  if (!list) return;
+
+  const counts = {};
+  allNotes.forEach(n => { counts[n.category.id] = (counts[n.category.id] || 0) + 1; });
+
+  list.innerHTML = categories.map(cat => {
+    const count = counts[cat.id] || 0;
+    const countLabel = count === 1 ? '1 note' : `${count} notes`;
+    const safeId = escapeHtml(cat.id);
+    return `
+      <div class="cat-row" data-cat-id="${safeId}">
+        <span class="cat-drag-handle" title="Drag to reorder">&#9776;</span>
+        <button class="cat-emoji-btn" data-cat-id="${safeId}"
+          onclick="toggleEditEmojiPicker('${safeId}')" title="Change emoji">${cat.emoji}</button>
+        <div id="emoji-picker-${safeId}" class="emoji-picker hidden"></div>
+        <span class="cat-row-name" onclick="startCatRename('${safeId}')" title="Click to rename">${escapeHtml(cat.name)}</span>
+        <input class="cat-row-input hidden" type="text" value="${escapeHtml(cat.name)}"
+          onkeydown="handleRenameKey(event,'${safeId}')" autocomplete="off" />
+        <span class="cat-note-count">${countLabel}</span>
+        <div class="cat-row-actions">
+          <button class="btn-sm-primary cat-save-btn hidden" onclick="saveCatRename('${safeId}')">Save</button>
+          <button class="btn-sm-secondary cat-cancel-btn hidden" onclick="cancelCatRename('${safeId}')">&#10005;</button>
+          <button class="icon-btn cat-delete-btn" onclick="confirmDeleteCat('${safeId}')" title="Delete category">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          </button>
+        </div>
+      </div>`;
+  }).join('');
+
+  // Populate all emoji pickers
+  categories.forEach(cat => populateEditEmojiPicker(cat.id));
+
+  // Set up new-category emoji button
+  const newBtn = document.getElementById('new-cat-emoji-btn');
+  if (newBtn) newBtn.textContent = newCatEmoji;
+  populateNewEmojiPicker();
+
+  initCatDrag(list);
+}
+
+// ---- Emoji pickers ----
+
+function populateNewEmojiPicker() {
+  const picker = document.getElementById('emoji-picker-new');
+  if (!picker) return;
+  picker.innerHTML = EMOJI_OPTIONS.map(e =>
+    `<button class="emoji-opt${e === newCatEmoji ? ' selected' : ''}" onclick="selectNewEmoji('${e}')">${e}</button>`
+  ).join('');
+}
+
+function selectNewEmoji(emoji) {
+  newCatEmoji = emoji;
+  const btn = document.getElementById('new-cat-emoji-btn');
+  if (btn) btn.textContent = emoji;
+  document.getElementById('emoji-picker-new').classList.add('hidden');
+  populateNewEmojiPicker();
+}
+
+function toggleNewEmojiPicker() {
+  const picker = document.getElementById('emoji-picker-new');
+  if (!picker) return;
+  const wasHidden = picker.classList.contains('hidden');
+  closeAllEmojiPickers();
+  if (wasHidden) picker.classList.remove('hidden');
+}
+
+function populateEditEmojiPicker(catId) {
+  const cat = categories.find(c => c.id === catId);
+  if (!cat) return;
+  const picker = document.getElementById(`emoji-picker-${catId}`);
+  if (!picker) return;
+  const cur = pendingEditEmoji[catId] || cat.emoji;
+  picker.innerHTML = EMOJI_OPTIONS.map(e =>
+    `<button class="emoji-opt${e === cur ? ' selected' : ''}" onclick="selectEditEmoji('${escapeHtml(catId)}','${e}')">${e}</button>`
+  ).join('');
+}
+
+function selectEditEmoji(catId, emoji) {
+  pendingEditEmoji[catId] = emoji;
+  const btn = document.querySelector(`.cat-row[data-cat-id="${catId}"] .cat-emoji-btn`);
+  if (btn) btn.textContent = emoji;
+  closeAllEmojiPickers();
+  populateEditEmojiPicker(catId);
+  // Enter rename mode so Save button appears
+  const input = document.querySelector(`.cat-row[data-cat-id="${catId}"] .cat-row-input`);
+  if (input && input.classList.contains('hidden')) startCatRename(catId);
+}
+
+function toggleEditEmojiPicker(catId) {
+  const picker = document.getElementById(`emoji-picker-${catId}`);
+  if (!picker) return;
+  const wasHidden = picker.classList.contains('hidden');
+  closeAllEmojiPickers();
+  if (wasHidden) {
+    populateEditEmojiPicker(catId);
+    picker.classList.remove('hidden');
+    const input = document.querySelector(`.cat-row[data-cat-id="${catId}"] .cat-row-input`);
+    if (input && input.classList.contains('hidden')) startCatRename(catId);
+  }
+}
+
+function closeAllEmojiPickers() {
+  document.querySelectorAll('.emoji-picker').forEach(p => p.classList.add('hidden'));
+}
+
+// ---- Inline rename ----
+
+function startCatRename(catId) {
+  const row = document.querySelector(`.cat-row[data-cat-id="${catId}"]`);
+  if (!row) return;
+  row.querySelector('.cat-row-name').classList.add('hidden');
+  row.querySelector('.cat-row-input').classList.remove('hidden');
+  row.querySelector('.cat-save-btn').classList.remove('hidden');
+  row.querySelector('.cat-cancel-btn').classList.remove('hidden');
+  row.querySelector('.cat-delete-btn').classList.add('hidden');
+  row.querySelector('.cat-row-input').focus();
+  row.querySelector('.cat-row-input').select();
+}
+
+function cancelCatRename(catId) {
+  const row = document.querySelector(`.cat-row[data-cat-id="${catId}"]`);
+  const cat = categories.find(c => c.id === catId);
+  if (!row || !cat) return;
+  delete pendingEditEmoji[catId];
+  row.querySelector('.cat-row-input').value = cat.name;
+  row.querySelector('.cat-emoji-btn').textContent = cat.emoji;
+  row.querySelector('.cat-row-name').classList.remove('hidden');
+  row.querySelector('.cat-row-input').classList.add('hidden');
+  row.querySelector('.cat-save-btn').classList.add('hidden');
+  row.querySelector('.cat-cancel-btn').classList.add('hidden');
+  row.querySelector('.cat-delete-btn').classList.remove('hidden');
+  closeAllEmojiPickers();
+  populateEditEmojiPicker(catId);
+}
+
+function saveCatRename(catId) {
+  const row = document.querySelector(`.cat-row[data-cat-id="${catId}"]`);
+  const cat = categories.find(c => c.id === catId);
+  if (!row || !cat) return;
+  const newName = row.querySelector('.cat-row-input').value.trim();
+  if (!newName) { showToast('Name cannot be empty', 'error'); return; }
+
+  const newEmoji = pendingEditEmoji[catId] || cat.emoji;
+  cat.name = newName;
+  cat.emoji = newEmoji;
+  delete pendingEditEmoji[catId];
+  saveCategories();
+
+  // Update all in-memory notes that reference this category
+  allNotes.forEach(n => {
+    if (n.category.id === catId) n.category = { ...n.category, name: newName, emoji: newEmoji };
+  });
+
+  // Switch back to view mode
+  row.querySelector('.cat-row-name').textContent = newName;
+  row.querySelector('.cat-emoji-btn').textContent = newEmoji;
+  row.querySelector('.cat-row-name').classList.remove('hidden');
+  row.querySelector('.cat-row-input').classList.add('hidden');
+  row.querySelector('.cat-save-btn').classList.add('hidden');
+  row.querySelector('.cat-cancel-btn').classList.add('hidden');
+  row.querySelector('.cat-delete-btn').classList.remove('hidden');
+
+  buildCategoryFilters();
+  buildCategorySelect();
+  applyFilters();
+  showToast('Category updated', 'success');
+}
+
+function handleRenameKey(e, catId) {
+  if (e.key === 'Enter') { e.preventDefault(); saveCatRename(catId); }
+  if (e.key === 'Escape') cancelCatRename(catId);
+}
+
+// ---- Add new category ----
+
+async function addNewCategory() {
+  const nameInput = document.getElementById('new-cat-name');
+  const name = nameInput.value.trim();
+  if (!name) { showToast('Enter a category name', 'error'); nameInput.focus(); return; }
+
+  const id = name.toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, 50);
+
+  if (!id) { showToast('Invalid name — use letters or numbers', 'error'); return; }
+  if (categories.find(c => c.id === id)) {
+    showToast('A category with that name already exists', 'error'); return;
+  }
+
+  const btn = document.querySelector('#cat-manager-modal .cat-add-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
+
+  try {
+    await createCategoryOnGitHub(id);
+    const newCat = { id, name, emoji: newCatEmoji };
+    categories.push(newCat);
+    saveCategories();
+    buildCategoryFilters();
+    buildCategorySelect();
+    nameInput.value = '';
+    newCatEmoji = '📁';
+    renderCategoryManager();
+    showToast(`"${name}" created!`, 'success');
+  } catch (err) {
+    showToast(`Error: ${err.message}`, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '+ Add'; }
+  }
+}
+
+// ---- Delete category ----
+
+async function confirmDeleteCat(catId) {
+  const cat = categories.find(c => c.id === catId);
+  if (!cat) return;
+
+  const counts = {};
+  allNotes.forEach(n => { counts[n.category.id] = (counts[n.category.id] || 0) + 1; });
+  const count = counts[catId] || 0;
+
+  const msg = count > 0
+    ? `"${cat.name}" contains ${count} note${count > 1 ? 's' : ''}.\n\nDeleting this category will permanently delete all its notes and files from GitHub.\n\nThis CANNOT be undone. Continue?`
+    : `Delete category "${cat.name}"?\n\nThis cannot be undone.`;
+
+  if (!confirm(msg)) return;
+
+  const row = document.querySelector(`.cat-row[data-cat-id="${catId}"]`);
+  if (row) row.classList.add('cat-deleting');
+
+  try {
+    await deleteCategoryOnGitHub(catId);
+    categories = categories.filter(c => c.id !== catId);
+    allNotes = allNotes.filter(n => n.category.id !== catId);
+    saveCategories();
+
+    if (activeCategory === catId) activeCategory = 'all';
+    buildCategoryFilters();
+    buildCategorySelect();
+    applyFilters();
+    buildTagFilters();
+    renderCategoryManager();
+    showToast(`"${cat.name}" deleted`, 'success');
+  } catch (err) {
+    if (row) row.classList.remove('cat-deleting');
+    showToast(`Error: ${err.message}`, 'error');
+  }
+}
+
+// ===== GITHUB CATEGORY SYNC =====
+
+async function createCategoryOnGitHub(catId) {
+  const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${catId}/.gitkeep`, {
+    method: 'PUT',
+    body: JSON.stringify({ message: `Create category: ${catId}`, content: btoa('') })
+  });
+  if (!res.ok && res.status !== 422) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.message || 'Failed to create folder on GitHub');
+  }
+}
+
+async function deleteCategoryOnGitHub(catId) {
+  const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${catId}`);
+  if (res.status === 404) return; // already gone
+  if (!res.ok) throw new Error('Could not read category folder');
+  const files = await res.json();
+  if (!Array.isArray(files)) return;
+  // Delete in batches of 5 to respect rate limits
+  for (let i = 0; i < files.length; i += 5) {
+    await Promise.all(files.slice(i, i + 5).map(f =>
+      ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/${f.path}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ message: `Delete: ${f.name}`, sha: f.sha })
+      }).catch(() => {})
+    ));
+  }
+}
+
+// ===== DRAG-AND-DROP (pointer events — works on mobile & desktop) =====
+
+function initCatDrag(listEl) {
+  let dragged = null;
+  let placeholder = null;
+  let offsetY = 0;
+
+  listEl.querySelectorAll('.cat-drag-handle').forEach(handle => {
+    handle.addEventListener('pointerdown', startDrag);
+  });
+
+  function startDrag(e) {
+    e.preventDefault();
+    closeAllEmojiPickers();
+
+    const row = e.currentTarget.closest('.cat-row');
+    if (!row) return;
+    dragged = row;
+
+    const rect = row.getBoundingClientRect();
+    offsetY = e.clientY - rect.top;
+
+    // Placeholder keeps the space
+    placeholder = document.createElement('div');
+    placeholder.className = 'cat-row-placeholder';
+    placeholder.style.height = rect.height + 'px';
+    row.after(placeholder);
+
+    // Float the row
+    row.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;z-index:9999;pointer-events:none;`;
+    row.classList.add('is-dragging');
+
+    document.addEventListener('pointermove', onMove, { passive: false });
+    document.addEventListener('pointerup', onEnd);
+    document.addEventListener('pointercancel', onEnd);
+  }
+
+  function onMove(e) {
+    if (!dragged) return;
+    e.preventDefault();
+    const y = e.clientY;
+    dragged.style.top = (y - offsetY) + 'px';
+
+    const rows = [...listEl.querySelectorAll('.cat-row:not(.is-dragging)')];
+    let placed = false;
+    for (const r of rows) {
+      const rRect = r.getBoundingClientRect();
+      if (y < rRect.top + rRect.height / 2) {
+        listEl.insertBefore(placeholder, r);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed && rows.length) listEl.appendChild(placeholder);
+  }
+
+  function onEnd() {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onEnd);
+    document.removeEventListener('pointercancel', onEnd);
+    if (!dragged || !placeholder) return;
+
+    listEl.insertBefore(dragged, placeholder);
+    placeholder.remove();
+    placeholder = null;
+
+    dragged.style.cssText = '';
+    dragged.classList.remove('is-dragging');
+
+    // Persist new order
+    const newOrder = [...listEl.querySelectorAll('.cat-row')].map(r => r.dataset.catId);
+    categories = newOrder.map(id => categories.find(c => c.id === id)).filter(Boolean);
+    saveCategories();
+    buildCategoryFilters();
+    buildCategorySelect();
+    dragged = null;
+  }
 }

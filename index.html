@@ -38,6 +38,9 @@
             <button class="icon-btn" onclick="loadAllNotes(true)" title="Refresh">
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
             </button>
+            <button class="icon-btn" onclick="openCategoryManager()" title="Manage Categories" aria-label="Manage Categories">
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+            </button>
             <button class="icon-btn" onclick="openModal('settings-modal')" title="Settings" aria-label="Settings">
               <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             </button>
@@ -121,6 +124,39 @@
             <button type="submit" class="btn-primary" id="entry-save-btn">Save to Vault</button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <!-- Category Manager Modal -->
+    <div id="cat-manager-modal" class="modal hidden" onclick="modalBackdropClick(event,'cat-manager-modal')">
+      <div class="modal-card cat-manager-card">
+        <div class="modal-header">
+          <h3>🗂️ Manage Categories</h3>
+          <button class="close-btn" onclick="closeModal('cat-manager-modal')">×</button>
+        </div>
+
+        <!-- Add new category -->
+        <div class="cat-add-box">
+          <div class="cat-add-label">Add New Category</div>
+          <div class="cat-add-row">
+            <button type="button" id="new-cat-emoji-btn" class="emoji-pick-btn"
+              onclick="toggleNewEmojiPicker()" title="Pick emoji">📁</button>
+            <input type="text" id="new-cat-name" class="cat-name-input"
+              placeholder="Category name…" autocomplete="off"
+              onkeydown="if(event.key==='Enter'){event.preventDefault();addNewCategory();}" />
+            <button class="btn-sm-primary cat-add-btn" onclick="addNewCategory()">+ Add</button>
+          </div>
+          <div id="emoji-picker-new" class="emoji-picker hidden"></div>
+        </div>
+
+        <!-- Category list (populated by JS) -->
+        <div class="cat-list-header">
+          <span>Your Categories</span>
+          <span class="cat-list-hint">Drag ☰ to reorder · click name to rename</span>
+        </div>
+        <div id="cat-manager-list" class="cat-manager-list"></div>
+
+        <p class="cat-manager-footer">Changes sync to GitHub automatically</p>
       </div>
     </div>
 

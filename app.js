@@ -70,10 +70,88 @@ function loadCategories() {
 }
 
 function saveCategories() {
+  // Write to localStorage immediately (synchronous fallback / offline cache)
   try { localStorage.setItem('vault_categories', JSON.stringify(categories)); } catch {}
+  // Write to GitHub in the background; surface errors as a toast
+  pushCategoriesToGitHub().catch(e => {
+    console.warn('Category sync failed:', e);
+    showToast('Categories saved locally — GitHub sync failed', 'error');
+  });
+}
+
+// ===== CATEGORY GITHUB SYNC =====
+
+async function syncCategoriesFromGitHub() {
+  // Called on startup: fetch categories.json and update local state.
+  // On 404 (first run), creates the file with the current defaults.
+  try {
+    const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/categories.json`);
+    if (res.ok) {
+      const data = await res.json();
+      categoriesFileSha = data.sha;
+      const raw = new TextDecoder().decode(
+        Uint8Array.from(atob(data.content.replace(/\n/g, '')), c => c.charCodeAt(0))
+      );
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        categories = parsed;
+        try { localStorage.setItem('vault_categories', JSON.stringify(categories)); } catch {}
+      }
+    } else if (res.status === 404) {
+      // First time on this device/account — bootstrap the file with current categories
+      await pushCategoriesToGitHub();
+    } else if (res.status === 401 || res.status === 403) {
+      vaultAuthError = true;
+    }
+    // Any other error: silently fall back to cached/default categories
+  } catch (e) {
+    console.warn('Could not load categories.json:', e);
+  }
+}
+
+async function pushCategoriesToGitHub() {
+  // Base64-encode JSON (handles Unicode correctly)
+  const json = JSON.stringify(categories, null, 2);
+  const content = btoa(unescape(encodeURIComponent(json)));
+  const body = { message: 'Update categories', content };
+  if (categoriesFileSha) body.sha = categoriesFileSha;
+
+  const res = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/categories.json`, {
+    method: 'PUT',
+    body: JSON.stringify(body)
+  });
+
+  if (res.ok) {
+    const data = await res.json();
+    categoriesFileSha = data.content.sha;
+    return;
+  }
+
+  // 409 Conflict = SHA is stale (another device saved first). Re-fetch SHA and retry once.
+  if (res.status === 409) {
+    const getRes = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/categories.json`);
+    if (getRes.ok) {
+      const getData = await getRes.json();
+      categoriesFileSha = getData.sha;
+      const retryBody = { message: 'Update categories', content, sha: categoriesFileSha };
+      const retryRes = await ghFetch(`/repos/${CONFIG.owner}/${CONFIG.repo}/contents/categories.json`, {
+        method: 'PUT',
+        body: JSON.stringify(retryBody)
+      });
+      if (retryRes.ok) {
+        const retryData = await retryRes.json();
+        categoriesFileSha = retryData.content.sha;
+        return;
+      }
+    }
+  }
+
+  const errData = await res.json().catch(() => ({}));
+  throw new Error(errData.message || `GitHub returned ${res.status}`);
 }
 
 let categories = loadCategories();
+let categoriesFileSha = null; // SHA of categories.json on GitHub, needed for updates
 
 // ===== COOKIE HELPERS =====
 function setCookie(name, value, days) {
@@ -113,11 +191,21 @@ let vaultAuthError = false;
 let favourites     = new Set(JSON.parse(localStorage.getItem('vault_favourites') || '[]'));
 
 // ===== INIT =====
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  // Render immediately with cached/default categories (no flicker)
   buildCategoryFilters();
   buildCategorySelect();
-  if (token) { showScreen('main-screen'); loadAllNotes(); }
-  else        { showScreen('setup-screen'); }
+  if (token) {
+    showScreen('main-screen');
+    showLoadingState();
+    // Sync categories.json first so notes load against the correct category list
+    await syncCategoriesFromGitHub();
+    buildCategoryFilters();
+    buildCategorySelect();
+    loadAllNotes();
+  } else {
+    showScreen('setup-screen');
+  }
 });
 
 function showScreen(id) {
@@ -154,6 +242,10 @@ async function connectVault() {
     setCookie('github_token', token, 365);
     try { localStorage.setItem('github_token', token); } catch {}
     showScreen('main-screen');
+    showLoadingState();
+    await syncCategoriesFromGitHub();
+    buildCategoryFilters();
+    buildCategorySelect();
     loadAllNotes();
   } catch { showSetupError('Network error. Check your internet connection.'); }
 }
@@ -164,7 +256,7 @@ function showSetupError(msg) {
 }
 function hideSetupError() { document.getElementById('setup-error').classList.add('hidden'); }
 
-function updateToken() {
+async function updateToken() {
   const val = document.getElementById('settings-token').value.trim();
   if (!val) { showToast('Please enter a token', 'error'); return; }
   token = val;
@@ -172,6 +264,9 @@ function updateToken() {
   try { localStorage.setItem('github_token', token); } catch {}
   closeModal('settings-modal');
   showToast('Token saved!', 'success');
+  await syncCategoriesFromGitHub();
+  buildCategoryFilters();
+  buildCategorySelect();
   loadAllNotes();
 }
 
